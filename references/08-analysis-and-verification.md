@@ -96,15 +96,11 @@ and the 77% in-key figure are the tell, not the answer. `k.tonalCertainty()`
 
 ```python
 from music21.analysis import discrete
-print(s.analyze('ambitus'))                       # <music21.interval.Interval m21>
+s.analyze('ambitus')                              # <music21.interval.Interval m21>
+lo, hi = discrete.Ambitus().getPitchSpan(s)       # discrete.py:1012 -> F#2, E5
 
-amb = discrete.Ambitus()
-lo, hi = amb.getPitchSpan(s)                      # discrete.py:1012
-print(lo.nameWithOctave, hi.nameWithOctave)       # F#2 E5
-
-mid = discrete.MelodicIntervalDiversity()
-found = mid.countMelodicIntervals(s.parts[0])     # discrete.py:1232
-print({k: v[1] for k, v in sorted(found.items(), key=lambda x: -x[1][1])})
+found = discrete.MelodicIntervalDiversity().countMelodicIntervals(s.parts[0])  # :1232
+{k: v[1] for k, v in sorted(found.items(), key=lambda x: -x[1][1])}
 # {'M2': 17, 'm3': 4, 'M3': 4, 'm2': 3, 'P4': 2}
 ```
 
@@ -128,13 +124,10 @@ smooths each bar's interpretation dictionary with its neighbours weighted by `1/
 from music21.analysis import floatingKey
 ka = floatingKey.KeyAnalyzer(s)
 ka.windowSize = 4                # bigger = fewer modulations reported
-for i, k in enumerate(ka.run()):
-    print(f'm{i}: {k}')
-# m0: A major   m1: A major   m2: A major   m3: f# minor  m4: f# minor
-# m5: f# minor  m6: f# minor  m7: f# minor  m8: f# minor  m9: f# minor
-
+ka.run()                         # one Key per measure, 0-indexed
+# [A, A, A, f#, f#, f#, f#, f#, f#, f#]
 ka.getRawKeyByMeasure()          # unsmoothed; noisy but honest
-# [A major, E major, A major, f# minor, E major, A major, b minor, C# major, F# major, b minor]
+# [A, E, A, f#, E, A, b, C#, F#, b]
 ```
 
 ### WindowedAnalysis — arbitrary window in quarter notes
@@ -148,11 +141,8 @@ wa = windowed.WindowedAnalysis(s, discrete.AardenEssen())
 data, colors = wa.analyze(8, windowType='noOverlap')   # 8 quarter notes per window
 for i, (tonic, mode, r) in enumerate(data):
     print(f'q{i*8:3d}-{i*8+8:3d}: {tonic} {mode} r={r:.3f}')
-# q  0-  8: A major   r=0.899
-# q  8- 16: F# minor  r=0.890
-# q 16- 24: A major   r=0.895
-# q 24- 32: F# major  r=0.716
-# q 32- 40: B minor   r=0.778
+# q 0-8: A major r=0.899 | q 8-16: F# minor r=0.890 | q 16-24: A major r=0.895
+# q 24-32: F# major r=0.716 | q 32-40: B minor r=0.778
 ```
 
 `windowType` is `'overlap'` (default), `'noOverlap'`, or `'adjacentAverage'`
@@ -368,10 +358,11 @@ still render fine and are wrong. Run against a deliberately broken 8-bar two-par
 parallel fifths throughout, one duration, no velocities, a cello note below C2:
 
 ```python
-from music21 import stream, note, chord, key, tree, instrument
+from music21 import corpus, note, chord, key, tree, instrument
 from music21.analysis import discrete, patel, windowed
 
-TARGET = key.Key('d', 'minor')
+sc = build_my_piece()             # the Score under test
+TARGET = key.Key('d', 'minor')    # what I *meant* to write
 fail = []
 ```
 
@@ -421,8 +412,8 @@ The corpus ships a regression fixture, so you can confirm your detector works be
 trusting it. Report the **measure number**, not the offset — that is what a human acts on:
 
 ```python
-sc = corpus.parse('demos/chorale_with_parallels')
-# ... same loop, printing f'm{v.measureNumber}' ...
+fixture = corpus.parse('demos/chorale_with_parallels')
+# ... same loop over its verticalities, printing f'm{v.measureNumber}' ...
 # P8 m1 2.0  v1n1=C#5 v1n2=D5 / v2n1=C#3 v2n2=D3
 # P8 m2 3.0  v1n1=D5  v1n2=E5 / v2n1=D3  v2n2=E3
 # P8 m4 9.0  v1n1=A#5 v1n2=B5 / v2n1=A#4 v2n2=B4
@@ -722,21 +713,20 @@ test cases: `beach/prayer_of_a_tired_child.musicxml`, `chopin/mazurka06-2.krn`,
 `lusitano/allor_che_ignuda.mxl`, `schubert/Lindenbaum.xml`, `verdi/laDonnaEMobile.mxl`,
 `weber/concertino_clarinet.mxl`, `webern/webern_dormi_jesu_op_16_no_2.mxl`.
 
-* **363 works have composer "bach"**; 323 of those are four-part (chorales). There are
-  **20 romanText analysis files** in `bach/choraleAnalyses/` and **48 more** in
-  `monteverdi/` — ground-truth roman-numeral readings to check your own analyser against:
+**363 works have composer "bach"**, 323 of them four-part chorales. **20 romanText
+analysis files** live in `bach/choraleAnalyses/` and **48 more** in `monteverdi/` —
+ground-truth roman-numeral readings to check your own analyser against:
 
-  ```python
-  a = corpus.parse('bach/choraleAnalyses/riemenschneider001.rntxt')
-  [r.figure for r in a.recurse().getElementsByClass(roman.RomanNumeral)][:8]
-  # ['I', 'I', 'IV6', 'V6', 'I', 'V', 'vi', 'IV']       60 RNs, key G major
-  ```
-* **12,834 of 15,112 works have no composer metadata** — the folk collections. Don't
-  filter by composer when mining those.
-* Only 233 distinct composer strings exist and they are **not normalised**: `'J.S. Bach'`
-  (338), `'J. S. Bach'` (20), `'Bach, Johann Sebastian'` (3) are three different values.
-  `corpus.search('bach', field='composer')` does substring matching and catches all of
-  them.
+```python
+a = corpus.parse('bach/choraleAnalyses/riemenschneider001.rntxt')
+[r.figure for r in a.recurse().getElementsByClass(roman.RomanNumeral)][:8]
+# ['I', 'I', 'IV6', 'V6', 'I', 'V', 'vi', 'IV']       60 RNs, key G major
+```
+
+**12,834 of 15,112 works have no composer metadata** (the folk collections) — don't filter
+by composer when mining those. Of the 233 composer strings that do exist, none are
+normalised: `'J.S. Bach'` (338), `'J. S. Bach'` (20) and `'Bach, Johann Sebastian'` (3)
+are three separate values, which is why `corpus.search` does substring matching.
 
 ```python
 corpus.parse('bach/bwv66.6')                  # exact or partial path
