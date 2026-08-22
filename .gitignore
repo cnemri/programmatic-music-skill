@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# renders and intermediates
+*.mp3
+*.wav
+*.mid
+*.midi
+!templates/*.mid
+wav/
+wav_*/
+stems/
+stems_*/
+out/
+
+# soundfonts are large; ensure_soundfont() fetches one
+*.sf2
+*.sf3
+
+.DS_Store
+.pytest_cache/

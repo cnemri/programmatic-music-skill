@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""
+Tests for m21kit. Run:  python -m pytest tests/ -q      (or just: python tests/test_m21kit.py)
+
+The audio tests are skipped automatically when fluidsynth/ffmpeg or a soundfont
+are unavailable, so the symbolic half runs anywhere.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
+import pytest                                             # noqa: E402
+from music21 import instrument, stream                    # noqa: E402
+from m21kit import drums, midiio, perform, render, scales, verify   # noqa: E402
+
+
+# ---------------------------------------------------------------- scales ---
+def test_known_scales_are_right():
+    assert scales.pitches('major', 'C4') == [60, 62, 64, 65, 67, 69, 71]
+    # Maqam Hijaz on D: D Eb F# G A Bb C -- the augmented 2nd is the identity
+    assert scales.pitches('hijaz', 'D4') == [62, 63, 66, 67, 69, 70, 72]
+    assert scales.pitches('malkauns', 'C4') == [60, 63, 65, 68, 70]
+    # flamenco == phrygian dominant == maqam hijaz, same intervals
+    assert scales.SCALES['flamenco'][0] == scales.SCALES['maqam_hijaz'][0]
+
+
+def test_melakarta_formula():
+    assert scales.melakarta(29) == (0, 2, 4, 5, 7, 9, 11)     # major
+    assert scales.melakarta(65) == (0, 2, 4, 6, 7, 9, 11)     # lydian
+    assert scales.melakarta(8) == (0, 1, 3, 5, 7, 8, 10)      # todi/phrygian
+    assert len([k for k in scales.SCALES if k.startswith('melakarta_')]) == 72
+
+
+def test_maqam_from_ajnas():
+    assert scales.build_maqam('hijaz', 'nahawand') == scales.SCALES['maqam_hijaz'][0]
+
+
+def test_microtonal_detection():
+    assert scales.is_microtonal('maqam_rast')
+    assert not scales.is_microtonal('maqam_hijaz')
+    # exact quarter tones round consistently downward by default
+    assert scales.nearest_12tet('maqam_rast') == (0, 2, 3, 5, 7, 9, 10)
+    assert scales.nearest_12tet('maqam_rast', 'up') == (0, 2, 4, 5, 7, 9, 11)
+
+
+def test_scale_name_resolution_and_errors():
+    assert scales.resolve('hijaz') == 'maqam_hijaz'
+    assert scales.resolve('malkauns') == 'raga_malkauns'
+    with pytest.raises(KeyError) as e:
+        scales.pitches('nonexistent-scale', 'C4')
+    assert 'Did you mean' in str(e.value)
+
+
+def test_m21_scale_roundtrip():
+    sc = scales.m21_scale('hijaz', 'D4')
+    got = [p.nameWithOctave for p in sc.getPitches('D4', 'D5')]
+    assert got == ['D4', 'E-4', 'F#4', 'G4', 'A4', 'B-4', 'C5', 'D5']
+
+
+def test_diatonic_chord_building():
+    assert scales.degrees_to_chord('major', 'C4', 5, size=4) == [67, 71, 74, 77]  # G7
+    assert scales.degrees_to_chord('major', 'C4', 1, size=3) == [60, 64, 67]      # C
+
+
+# ----------------------------------------------------------------- drums ---
+def test_gm_map_and_grooves():
+    assert drums.GM['kick'] == 36 and drums.GM['snare'] == 38
+    assert drums.GM['hand_clap'] == 39 and drums.GM['side_stick'] == 37
+    assert len(drums.GROOVES) >= 30
+    for name, g in drums.GROOVES.items():
+        assert g['hits'], f'{name} has no hits'
+        span = g['bar'] * g['bars']
+        for off, key, scal in g['hits']:
+            assert 0 <= off < span + 1e-6, f'{name}: hit at {off} outside {span}'
+            assert 0 < scal <= 1.0, f'{name}: bad velocity scalar {scal}'
+            assert drums._k(key) in range(27, 88), f'{name}: {key} not a GM drum key'
+
+
+def test_groove_places_notes():
+    p = stream.Part()
+    end = drums.groove(p, 0.0, 'rock_basic', vel=80, repeats=2)
+    assert end == 8.0
+    assert len(p.flatten().notes) == 2 * len(drums.GROOVES['rock_basic']['hits'])
+
+
+def test_groove_filtering():
+    p = stream.Part()
+    drums.groove(p, 0.0, 'tangos_flamencos', only=['hand_clap'])
+    keys = {n.pitch.midi for n in p.flatten().notes}
+    assert keys == {drums.GM['hand_clap']}
+
+
+# --------------------------------------------------------------- perform ---
+def test_strum_is_spread_in_time_and_ordered():
+    p = stream.Part()
+    perform.strum(p, 4.0, [40, 47, 52, 56], dur=1.0, vel=90, spread=0.04, jitter=0)
+    ns = sorted(p.flatten().notes, key=lambda n: n.offset)
+    assert [n.pitch.midi for n in ns] == [40, 47, 52, 56]        # low to high
+    assert abs(float(ns[-1].offset) - 4.12) < 1e-6               # 3 * 0.04
+    assert ns[0].quarterLength > ns[-1].quarterLength            # first rings longest
+
+
+def test_upstrum_reverses():
+    p = stream.Part()
+    perform.strum(p, 0.0, [40, 47, 52], dur=0.5, vel=80, up=True, jitter=0)
+    ns = sorted(p.flatten().notes, key=lambda n: n.offset)
+    assert [n.pitch.midi for n in ns] == [52, 47, 40]
+
+
+def test_tremolo_repeats_and_shapes():
+    p = stream.Part()
+    perform.tremolo(p, 0.0, 72, dur=1.0, vel=80, rate=0.1, jitter=0)
+    ns = list(p.flatten().notes)
+    assert 9 <= len(ns) <= 11
+    assert all(n.pitch.midi == 72 for n in ns)
+    assert len({n.volume.velocity for n in ns}) > 3        # it breathes
+
+
+def test_swing_moves_offbeats_only():
+    p = stream.Part()
+    for i in range(4):
+        perform.put(p, i * 0.5, 60, 0.5, 80, jitter=0)
+    perform.swing(p, ratio=0.667, unit=0.5)
+    offs = sorted(round(float(n.offset), 3) for n in p.flatten().notes)
+    assert offs[0] == 0.0 and offs[2] == 1.0               # downbeats unmoved
+    assert abs(offs[1] - 0.667) < 0.01                     # offbeats pushed late
+
+
+def test_crescendo_ramps_velocity():
+    p = stream.Part()
+    for i in range(9):
+        perform.put(p, float(i), 60, 1.0, 64, jitter=0)
+    perform.crescendo(p, 0, 8, 40, 120)
+    ns = sorted(p.flatten().notes, key=lambda n: n.offset)
+    assert ns[0].volume.velocity == 40 and ns[-1].volume.velocity == 120
+    assert ns[4].volume.velocity == 80
+
+
+# ---------------------------------------------------------------- midiio ---
+def test_tempo_map_math():
+    tm = midiio.TempoMap([(0, 60), (8, 120)])
+    assert tm.seconds(8) == 8.0
+    assert tm.seconds(16) == 12.0
+    assert abs(tm.offset(12.0) - 16.0) < 1e-6
+    assert tm.bpm_at(0) == 60 and tm.bpm_at(10) == 120
+
+
+def _tiny_score():
+    a = stream.Part(id='a'); b = stream.Part(id='b'); d = stream.Part(id='d')
+    for p in (a, b):
+        i = instrument.AcousticGuitar(); i.midiProgram = 24; p.insert(0, i)
+    midiio.add_tempo_map([a, b, d], [(0, 120)])
+    for t in range(4):
+        perform.put(a, float(t), 60 + t, 0.9, 90)
+        perform.strum(b, float(t), [48, 55, 60], 0.9, 80)
+        drums.groove(d, t * 1.0, 'tresillo', vel=80)
+    s = stream.Score()
+    for p in (a, b, d):
+        s.insert(0, p)
+    return s
+
+
+def test_channels_are_not_folded():
+    """The bug this whole package exists for: two Parts with the same
+    instrument otherwise land on one channel and cut each other off."""
+    sc = _tiny_score()
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 't.mid')
+        midiio.write_midi(sc, path, channels=[1, 2, 10])
+        tracks = midiio.describe_midi(path)
+        note_tracks = [t for t in tracks if t['notes']]
+        assert len(note_tracks) == 3
+        used = [c for t in note_tracks for c in t['channels']]
+        assert sorted(used) == [1, 2, 10], f'channel folding: {used}'
+
+
+def test_percussion_track_has_no_program_change():
+    sc = _tiny_score()
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 't.mid')
+        midiio.write_midi(sc, path, channels=[1, 2, 10])
+        perc = [t for t in midiio.describe_midi(path) if 10 in t['channels']]
+        assert perc and perc[0]['programs'] == []
+
+
+def test_stems_are_one_part_each():
+    sc = _tiny_score()
+    with tempfile.TemporaryDirectory() as td:
+        paths = midiio.write_stems(sc, td, channels=[1, 2, 10],
+                                   names=['a', 'b', 'd'])
+        assert len(paths) == 3
+        for p, ch in zip(paths, (1, 2, 10)):
+            nt = [t for t in midiio.describe_midi(p) if t['notes']]
+            assert len(nt) == 1 and nt[0]['channels'] == [ch]
+
+
+# ---------------------------------------------------------------- verify ---
+def test_outside_mode_finds_the_wrong_note():
+    p = stream.Part()
+    for m in [60, 62, 64, 65, 67, 69, 71]:      # C major
+        perform.put(p, 0, m, 1, 80, jitter=0)
+    perform.put(p, 8, 61, 1, 80, jitter=0)      # a C# that should not be there
+    r = verify.outside_mode(p, [x % 12 for x in scales.pitches('major', 'C4')])
+    assert r['outside'] == {'C#': 1}
+    assert r['outside_count'] == 1
+
+
+def test_range_check_catches_subrange_notes():
+    p = stream.Part()
+    perform.put(p, 0, 33, 1, 80, jitter=0)      # A1 -- below a guitar's low E
+    perform.put(p, 1, 60, 1, 80, jitter=0)
+    r = verify.range_check(p, instrument.AcousticGuitar())
+    if r['checked']:
+        assert r['out_of_range'] >= 1
+    r2 = verify.range_check(p, low=40, high=88)
+    assert r2['out_of_range'] == 1 and r2['examples'][0]['midi'] == 33
+
+
+def test_pitched_parts_drops_percussion():
+    sc = _tiny_score()
+    assert len(sc.parts) == 3
+    assert len(verify.pitched_parts(sc).parts) == 2
+
+
+def test_rhythm_report_flags_a_grid():
+    p = stream.Part()
+    for i in range(16):
+        perform.put(p, float(i), 60, 1.0, 80, jitter=0)     # identical everything
+    r = verify.rhythm_report(p)
+    assert r['distinct_durations'] == 1
+    assert r['velocity_distinct'] == 1
+    assert r['offset_grid_pct'] == 100.0
+
+
+def test_melody_match_pitch_sequence():
+    p = stream.Part()
+    for i, m in enumerate([64, 69, 71, 72, 69]):
+        perform.put(p, float(i), m, 1, 80, jitter=0)
+    assert verify.melody_match(p, [64, 69, 71, 72, 69])['pct'] == 100.0
+    assert verify.melody_match(p, [64, 69, 99, 72, 69])['pct'] == 80.0
+
+
+# ----------------------------------------------------------------- audio ---
+_tools = render.have_tools()
+_sf = render.find_soundfont(['/tmp/sf.sf2'])
+audio_ok = all(_tools.values()) and _sf
+skip_audio = pytest.mark.skipif(not audio_ok,
+                                reason='needs fluidsynth, ffmpeg and a soundfont')
+
+
+@skip_audio
+def test_end_to_end_render_and_measure():
+    sc = _tiny_score()
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, 'x.mp3')
+        render.score_to_mp3(sc, out, sf2=_sf, channels=[1, 2, 10],
+                            workdir=td, verbose=False,
+                            stems=[render.Stem('a', 3), render.Stem('b', -3),
+                                   render.Stem('d', -6)])
+        st = verify.audio_stats(out)
+        assert st['duration_s'] > 1
+        assert not st['clipped']
+        assert st['peak_dbfs'] < -0.5
+
+
+if __name__ == '__main__':
+    raise SystemExit(pytest.main([__file__, '-q']))
+
+
+# ------------------------------------------------- library behaviour guards ---
+def test_dynamic_rescales_explicit_velocity():
+    """Regression guard for the trap documented in SKILL.md rule 3: a Dynamic
+    multiplies velocities you set yourself rather than deferring to them."""
+    from music21 import dynamics, midi, note as m21note
+
+    def vels(part):
+        s = stream.Score(); s.insert(0, part)
+        mf = midi.translate.streamToMidiFile(s)
+        return [e.velocity for t in mf.tracks for e in t.events
+                if e.type == midi.ChannelVoiceMessages.NOTE_ON and e.velocity]
+
+    plain = stream.Part()
+    plain.insert(0, m21note.Note('C4', quarterLength=1))
+    assert vels(plain) == [90], 'music21 default velocity is 90, not 64 or 127'
+
+    quiet = stream.Part()
+    quiet.insert(0, dynamics.Dynamic('pp'))
+    n = m21note.Note('C4', quarterLength=1)
+    n.volume.velocity = 100
+    quiet.insert(0, n)
+    assert vels(quiet) == [50], 'a Dynamic scales an explicit velocity'
+
+    hairpin = stream.Part()
+    ns = [m21note.Note('C4', quarterLength=1) for _ in range(3)]
+    for i, x in enumerate(ns):
+        hairpin.insert(i, x)
+    hairpin.insert(0, dynamics.Crescendo(ns[0], ns[-1]))
+    assert vels(hairpin) == [90, 90, 90], 'hairpins do not affect MIDI at all'

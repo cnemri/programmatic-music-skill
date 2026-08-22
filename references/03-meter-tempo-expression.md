@@ -1,0 +1,640 @@
+# Meter, Tempo, and Performance Expression
+
+Everything that shapes *when* a note happens and *how hard* it is played: `TimeSignature`
+(four independent `MeterSequence`s), `MetronomeMark` tempo maps, `Dynamic`/velocity,
+articulations, ornaments, spanners, and repeats. The dividing line that matters to an agent
+that cannot listen: some of these change the rendered audio, most only change the printed
+page. Every claim below was executed on music21 **10.5.0** and, where playback is involved,
+verified by writing a MIDI file and reading the events back.
+
+## What Actually Sounds — verified verdict table
+
+| Object | Notation | MIDI / audio | Note |
+|---|---|---|---|
+| `MetronomeMark` | yes | **yes** — `SET_TEMPO` in track 0 | only this class becomes a tempo event |
+| `TempoText`, `MetricModulation` | yes | **no** | verified: no `SET_TEMPO` emitted |
+| `RitardandoSpanner`, `AccelerandoSpanner` | yes | **no** | write an explicit tempo ramp |
+| `TimeSignature` | yes | yes (`TIME_SIGNATURE` meta) | affects nothing audible |
+| `Dynamic` | yes | **yes** — scales velocity | must be *inside* the Part |
+| `Crescendo` / `Diminuendo` | yes | **no** | flat velocity; ramp by hand |
+| Articulations w/ `volumeShift` | yes | **yes** — velocity only | 8 of 54 classes; never changes length |
+| Staccato as *shortening* | — | **no** | note-off stays at full duration |
+| Ornaments (Trill, Mordent, Turn…) | yes | **no** until realized | `realizeOrnaments` first |
+| `Tremolo` | yes | **no**, even realized | realize emits *tied* notes → stripped |
+| `ArpeggioMark`, `ArpeggioMarkSpanner` | yes | **no** | no `realize()`; do it by hand |
+| `Fermata` | yes | **no** | duration unchanged |
+| `Slur`, `Glissando`, `Line`, `TrillExtension` | yes | **no** | pure notation |
+| `Ottava` | yes | **no** until `performTransposition()` | mutates the notes |
+| Repeat barlines, `DaCapo`, `Segno` | yes | **yes** | MIDI export auto-expands |
+
+## TimeSignature: four parallel MeterSequences
+
+A `TimeSignature` holds four independent hierarchical partitions of the bar
+(`music21/meter/base.py:509`). Changing one does not change the others.
+
+| Sequence | Governs | Consumed by |
+|---|---|---|
+| `.displaySequence` | what is printed / `.ratioString` | MusicXML export |
+| `.beamSequence` | automatic beam grouping | `Stream.makeBeams()` |
+| `.beatSequence` | `.beatCount`, `.getBeat()`, `note.beat` | beat queries |
+| `.accentSequence` | `.getAccentWeight()`, `note.beatStrength` | groove / analysis |
+
+```python
+from music21 import *
+for spec in ['4/4', '6/8', 'slow 6/8', '7/8', '9/8', '5/4', '3/8', '2/8+2/8+3/8']:
+    ts = meter.TimeSignature(spec)
+    print(f'{spec:12s} bar={ts.barDuration.quarterLength:<5} beats={ts.beatCount} '
+          f'{ts.classification:20s} beam={ts.beamSequence}')
+```
+```
+4/4          bar=4.0   beats=4 Simple Quadruple     beam={{1/8+1/8}+{1/8+1/8}+{1/8+1/8}+{1/8+1/8}}
+6/8          bar=3.0   beats=2 Compound Duple       beam={3/8+3/8}
+slow 6/8     bar=3.0   beats=6 Simple Sextuple      beam={3/8+3/8}
+7/8          bar=3.5   beats=7 Simple Septuple      beam={2/8+2/8+3/8}
+9/8          bar=4.5   beats=3 Compound Triple      beam={3/8+3/8+3/8}
+5/4          bar=5.0   beats=5 Simple Quintuple     beam={{1/4+1/4}+{1/4+1/4+1/4}}
+3/8          bar=1.5   beats=1 Other Single         beam={3/8}
+2/8+2/8+3/8  bar=3.5   beats=3 Other Triple         beam={2/8+2/8+3/8}
+```
+
+Construction strings: `'4/4'`, `'c'` (common), `'cut'`, `'fast 6/8'` / `'slow 6/8'`,
+additive `'2/4+3/8'`, non-power-of-two `'4/3'`, `'5/6'` (all construct fine on 10.5).
+
+`x/8` and `x/16` with a multiple-of-3 numerator default to **compound** (6/8 = 2 dotted beats);
+`'slow 6/8'` forces 6 simple beats. 3/8 defaults to **one** beat since v7.
+
+Placement: put the `TimeSignature` in the **first Measure of each Part**
+(`m.timeSignature = ts`, or `m.insert(0, ts)`). At Score or Part level it works inside music21
+but exports badly (`music21/meter/base.py:271`).
+
+## Beat, accent weight, and depth — the groove primitives
+
+```python
+ts = meter.TimeSignature('4/4')
+for f in ('getBeat', 'getBeatProportion', 'getBeatDepth'):
+    print(f, [getattr(ts, f)(i * 0.5) for i in range(8)])
+print('weight', [ts.getAccentWeight(i * 0.5, forcePositionMatch=True) for i in range(8)])
+```
+```
+getBeat            [1, 1, 2, 2, 3, 3, 4, 4]
+getBeatProportion  [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5]
+getBeatDepth       [2, 1, 2, 1, 2, 1, 2, 1]
+weight             [1.0, 0.125, 0.25, 0.125, 0.5, 0.125, 0.25, 0.125]
+```
+
+Accent weights for the common meters (offset step 0.5, `forcePositionMatch=True`):
+
+```
+4/4   1.0  0.125 0.25 0.125 0.5  0.125 0.25 0.125
+3/4   1.0  0.25  0.5  0.25  0.5  0.25
+6/8   1.0  0.25  0.25 0.5   0.25 0.25
+```
+
+`forcePositionMatch=True` is essential: without it any offset inside a span returns that span's
+weight, so off-beat notes look as strong as downbeats (`music21/meter/base.py:1770`).
+Weights are powers of two down from 1.0, generated by `_setDefaultAccentWeights(depth=3)`
+(`music21/meter/base.py:1242`). `permitMeterModulus=True` lets you query offsets past one bar.
+
+Equivalent per-note accessors, which resolve the meter from context:
+
+```python
+m = stream.Measure()
+m.timeSignature = meter.TimeSignature('6/8')
+for _ in range(6):
+    m.append(note.Note('C5', quarterLength=0.5))
+print([n.beat for n in m.notes])           # [1.0, Fraction(4,3), Fraction(5,3), 2.0, ...]
+print([n.beatStr for n in m.notes])        # ['1', '1 1/3', '1 2/3', '2', '2 1/3', '2 2/3']
+print([n.beatStrength for n in m.notes])   # [1.0, 0.25, 0.25, 0.5, 0.25, 0.25]
+```
+
+A note with no measure/meter context returns `nan` for `.beatStrength` — it does not raise.
+
+`Score.beatAndMeasureFromOffset(q)` maps a flat score offset to `(beat, Measure)`
+(`music21/stream/base.py:8945`):
+
+```python
+s.beatAndMeasureFromOffset(4.0)   # (2.0, <music21.stream.Measure 2 offset=3.0>)  in 3/4
+```
+
+## Odd and additive meters: 7/8 as 2+2+3
+
+Two ways. **Prefer the additive string** — it sets beats, accents *and* beams correctly in one
+step, and exports as an interchangeable MusicXML time signature.
+
+```python
+ts = meter.TimeSignature('2/8+2/8+3/8')
+print(ts.beatSequence)   # {{1/8+1/8}+{1/8+1/8}+{1/8+1/8+1/8}}
+print(ts.beamSequence)   # {2/8+2/8+3/8}
+print([ts.getAccentWeight(i*0.5, forcePositionMatch=True) for i in range(7)])
+print([ts.getBeat(i*0.5) for i in range(7)])
+print([ts.getBeatDuration(i*0.5).quarterLength for i in range(7)])
+```
+```
+[1.0, 0.25, 0.5, 0.25, 0.5, 0.25, 0.25]
+[1, 1, 2, 2, 3, 3, 3]
+[1.0, 1.0, 1.0, 1.0, 1.5, 1.5, 1.5]
+```
+
+MusicXML output is correct — three `<beats>/<beat-type>` pairs, `2 8 / 2 8 / 3 8`.
+
+The manual route on a plain `'7/8'` needs three separate steps, and you must re-subdivide and
+recompute accents or `getBeatDepth` and the weights stay wrong:
+
+```python
+ts = meter.TimeSignature('7/8')
+ts.beatSequence.partition([2, 2, 3])
+ts.beatSequence.subdividePartitionsEqual()   # restore the sub-beat level
+ts._setDefaultAccentWeights(3)               # else weights stay [1.0, 0.5, 0.5, ...]
+ts.beamSequence.partition(['1/4', '1/4', '3/8'])
+```
+
+**Additive-order bug (verified):** for a 7-numerator additive meter music21 ignores the order
+you wrote and applies the numerator-7 default `partition(3)` → 2+2+3, because `.summedNumerator`
+is `False` for `'a/b+c/d'` strings (only `(3+2)/8`-style sets it), so
+`_setDefaultBeamPartitions` (`music21/meter/base.py:1202`) does not skip.
+
+```python
+ts = meter.TimeSignature('3/8+2/8+2/8')
+print(ts.beatSequence)   # {{1/8+1/8+1/8}+{1/8+1/8}+{1/8+1/8}}   <- correct
+print(ts.beamSequence)   # {2/8+2/8+3/8}                          <- WRONG order
+```
+Fix by overwriting the beam sequence, then beam:
+```python
+from music21.meter.core import MeterSequence
+ts.beamSequence = MeterSequence('3/8+2/8+2/8')
+```
+Beam types for eight-eighth-note bars, via `m.makeBeams(inPlace=True)`:
+```
+7/8 default / additive 2+2+3 : start stop | start stop | start continue stop
+beamSequence = 3+2+2         : start continue stop | start stop | start stop
+```
+
+### Idiomatic accompaniment from accent weight
+
+```python
+ts = meter.TimeSignature('2/8+2/8+3/8')
+p = stream.Part()
+for bar in range(2):
+    m = stream.Measure(number=bar + 1)
+    if bar == 0:
+        m.insert(0, ts)
+    for k in range(7):
+        off = k * 0.5
+        w = ts.getAccentWeight(off, forcePositionMatch=True)
+        n = note.Note('C3' if w >= 0.5 else 'G3', quarterLength=0.5)
+        n.volume.velocity = int(50 + 70 * w)
+        n.volume.velocityIsRelative = False      # make it absolute
+        m.insert(off, n)
+    p.append(m)
+p.makeBeams(inPlace=True)
+```
+MIDI read-back (pitch, velocity): `48/120, 55/67, 48/85, 55/67, 48/85, 55/67, 55/67` per bar —
+downbeat 120, secondary beats 85, subdivisions 67. That is the 2+2+3 groove.
+
+## Tempo: the complete tempo-map recipe
+
+`MetronomeMark(text, number, referent)`. `number` is beats-per-minute *of the referent*;
+`referent` defaults to a quarter and accepts `'half'`, `'eighth'`, a `Duration`, or a
+quarter-length float. `'dotted-quarter'` is **not** a valid string — use `duration.Duration(1.5)`.
+
+```python
+mm = tempo.MetronomeMark(number=90, referent=duration.Duration(1.5))
+mm                        # <music21.tempo.MetronomeMark maestoso Dotted Quarter=90>
+mm.getQuarterBPM()        # 135.0
+mm.secondsPerQuarter()    # 0.44444
+mm.durationToSeconds(3.0) # 1.3333333333333333
+mm.secondsToDuration(1.0) # <music21.duration.Duration 2.25>
+mm.getEquivalentByReferent(1.0)   # <MetronomeMark maestoso Quarter=135>
+```
+
+Text alone implies a number, and a number implies text
+(`grave 40, largo 46, adagio 56, andante 72, moderato 92, allegro 132, vivace 160,
+presto 184, prestissimo 208`). `MetronomeMark(numberSounding=168)` is playback-only:
+it emits MIDI tempo but prints nothing.
+
+### The recipe
+
+```python
+def applyTempoMap(score, tempoMap):
+    """tempoMap: [(offsetQL, MetronomeMark), ...]. Marks go in ONE place only."""
+    for st in score.recurse(streamsOnly=True, includeSelf=True):
+        st.removeByClass(tempo.MetronomeMark)
+    for off, mm in tempoMap:
+        score.insert(off, mm)      # Score-level offsets == flat offsets
+    return score
+
+applyTempoMap(s, [
+    (0.0,  tempo.MetronomeMark('Andante', 72)),
+    (8.0,  tempo.MetronomeMark('Più mosso', 108)),
+    (12.0, tempo.MetronomeMark(number=54, text='rit. molto')),
+])
+print(s.seconds)                                # 13.3333
+print(s.flatten().metronomeMarkBoundaries())
+```
+```
+[(0.0, 8.0, <MetronomeMark Andante Quarter=72>),
+ (8.0, 12.0, <MetronomeMark Più mosso Quarter=108>),
+ (12.0, 16.0, <MetronomeMark rit. molto Quarter=54>)]
+```
+MIDI read-back: `ql=0.0 bpm=72.00 | ql=8.0 bpm=108.00 | ql=12.0 bpm=54.00`, all in track 0.
+
+### Exactly how tempo reaches MIDI
+
+`streamToMidiFile` → `prepareStreamForMidi` (`music21/midi/translate.py:2267`) →
+`conductorStream` (`:2325`). That function **moves** every `MetronomeMark`, `TimeSignature`
+and `KeySignature` out of every part into a synthetic conductor `Part` that becomes track 0,
+then `removeByClass`es them from the originals. Only `tempo.MetronomeMark` is matched by
+`elementToMidiEventList` (`:1408`), which is why `TempoText` and `MetricModulation` vanish.
+Ticks are 10080 per quarter; the meta value is `round(60e6 / quarterBPM)` µs.
+
+Verified behavior of placement (each row = SET_TEMPO events read back from the file):
+
+| Where the marks live | Result |
+|---|---|
+| One part only, offsets 0 & 8 | `[(0.0, 72), (8.0, 144)]` — correct |
+| **Both** parts, identical marks | `[(0.0, 72), (8.0, 144), (8.0, 144)]` — **duplicate** |
+| Two parts, conflicting at offset 0 | `[(0.0, 72)]` — part 2's mark silently dropped |
+| No marks at all | `[(0.0, 120)]` — default injected |
+| Mark only inside measure 2 | `[(4.0, 180)]` — **no tempo event at 0.0** |
+| Mid-measure (`m.insert(2.0, mm)`) | `[(2.0, 180)]` — works |
+
+**Rule: put every MetronomeMark in exactly one Part (or at Score level), and always put one at
+offset 0.** The dedup in `conductorStream` only compares against the previous offset seen
+(`music21/midi/translate.py:2376-2382`), so a second part's later marks slip through.
+
+Whether a mark sits in a Part or a Measure is irrelevant to MIDI — `getOffsetInHierarchy` flattens
+it. It *is* relevant to MusicXML, where it should be in the measure it belongs to.
+
+### Accelerando / ritardando
+
+There is no automatic ramp. `RitardandoSpanner`/`AccelerandoSpanner` are notation only (verified:
+no extra `SET_TEMPO`). Emit a staircase of marks:
+
+```python
+for i in range(17):
+    p.insert(i * 1.0, tempo.MetronomeMark(number=round(60 + (140 - 60) * i / 16, 2)))
+# read back: (0.0, 60.0) (1.0, 65.0) (2.0, 70.0) ... (15.0, 135.0) (16.0, 140.0)
+```
+Use `parentheses=True` and no `text` if you don't want 17 words printed on the staff, or build
+the ramp on a copy used only for audio.
+
+### Metric modulation
+
+```python
+mm = tempo.MetricModulation()
+mm.oldMetronome = tempo.MetronomeMark(number=100, referent=1.0)
+mm.setOtherByReferent(referent=1.5)     # quarter = dotted quarter
+mm.newMetronome                          # <MetronomeMark Dotted Quarter=100>, quarterBPM 150.0
+```
+It prints the ♩=♩. equation but emits **no** MIDI tempo. For playback insert
+`mm.newMetronome` (or `tempo.MetronomeMark(number=mm.newMetronome.getQuarterBPM())`) at the
+same offset.
+
+## Dynamics and MIDI velocity — **yes, they work**
+
+Verified: `ppp p mf ff` on four notes exports velocities `27, 63, 99, 127`.
+
+Chain: `prepareStreamForMidi` calls `volume.realizeVolume(part)` per part
+(`music21/volume.py:428`), which walks the dynamic map, calls `Volume.getRealized()` (`:165`)
+and caches the scalar; `noteToMidiEvents` then writes
+`int(round(n.volume.cachedRealized * 127))` (`music21/midi/translate.py:552`).
+
+`Dynamic.volumeScalar` (`music21/dynamics.py:87`) and the velocity you get in an otherwise
+empty context:
+
+| | pppp | ppp | pp | p | mp | mf | f | ff | fff | ffff | sf | n |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| scalar | .10 | .15 | .25 | .35 | .45 | .55 | .70 | .85 | .90 | .95 | .85 | 0.0 |
+| velocity | 12 | 19 | 31 | 44 | 57 | 69 | 88 | 107 | 114 | 120 | 107 | 0 |
+
+`pppppp`, `ppppp`, `fffff`, `ffffff` are in `shortNames` but **not** in the scalar table, so they
+all silently fall back to 0.5. Override with `d.volumeScalar = 0.05`.
+
+Scoping, verified:
+- A `Dynamic` inside Part A affects **only** Part A (`ppp` in A → 27; B stays 90).
+- A `Dynamic` inserted at **Score** level, outside any Part, affects **nothing** (both parts 90),
+  because `realizeVolume` is called per part-like substream.
+- A dynamic extends until the next dynamic (`extendDuration`), so one `Dynamic` at offset 0
+  colors the whole part.
+
+Explicit velocity interacts with dynamics multiplicatively unless you turn that off:
+
+```python
+n.volume.velocity = 100                  # with a ppp in context → exports 30
+n.volume.velocityIsRelative = False      # → exports 100 exactly
+```
+
+### Crescendo / Diminuendo do **not** affect velocity
+
+```python
+cresc = dynamics.Crescendo(list_of_8_notes)
+part.insert(0, cresc)
+# MIDI velocities: [90, 90, 90, 90, 90, 90, 90, 90]
+```
+`DynamicWedge` is a plain `Spanner` (`music21/dynamics.py:340`) with no volume hook. Workaround —
+keep the wedge for the page and ramp velocity yourself for the ear:
+
+```python
+lo, hi = 40, 90
+for i, n in enumerate(ns):
+    n.volume.velocity = int(lo + i * (hi - lo) / (len(ns) - 1))
+    n.volume.velocityIsRelative = False
+part.insert(0, dynamics.Crescendo(ns))
+# MIDI: [40, 47, 54, 61, 68, 75, 82, 90]
+```
+
+## Articulations — **yes for velocity, never for length**
+
+Only the 8 classes with a non-zero `_volumeShift` touch MIDI; the shift is *added* to the
+realized scalar (`music21/volume.py:287`).
+
+| Articulation | volumeShift | velocity from a bare 90 |
+|---|---|---|
+| `StrongAccent` | +0.15 | 109 |
+| `Accent`, `Spiccato` | +0.10 | 103 |
+| `Staccato`, `Staccatissimo`, `Stress` | +0.05 | 96 |
+| (none) | 0 | 90 |
+| `Tenuto`, `Unstress` | −0.05 | 84 |
+
+All 46 other subclasses — `Pizzicato`, `SnapPizzicato`, `UpBow`, `DownBow`, `Harmonic`,
+`StringHarmonic`, `Fingering`, `StringIndication`, `BreathMark`, `Caesura`, `DetachedLegato`,
+`Doit`, `Falloff`, `Scoop`, `Plop`, `HammerOn`, `PullOff`, `FretBend`, `DoubleTongue`,
+`OrganToe`, … — are notation only.
+
+**Staccato does not shorten the note.** Verified: four staccato quarters export
+`NOTE_ON 0.0 / NOTE_OFF 1.0 / NOTE_ON 1.0 / …` — full length, only velocity bumped. Do it yourself:
+
+```python
+def applyArticulationDurations(part, staccato=0.5, staccatissimo=0.25):
+    for n in part.recurse().notes:
+        for a in n.articulations:
+            if isinstance(a, articulations.Staccatissimo):
+                n.quarterLength = opFrac(n.quarterLength * staccatissimo)
+            elif isinstance(a, articulations.Staccato):
+                n.quarterLength = opFrac(n.quarterLength * staccato)
+# → NOTE_ON 0.0 / NOTE_OFF 0.5 / NOTE_ON 1.0 / NOTE_OFF 1.5 ...
+```
+Do this on a **playback copy**: shortening the notes leaves rests/gaps in the notated score.
+
+## Ornaments — nothing sounds until you realize
+
+Verified: a `Trill` + `Mordent` + `Tremolo` measure exports as three plain notes
+(`60, 62, 64`). After `stream.makeNotation.realizeOrnaments(part)` it exports 11 note-ons.
+
+Two entry points:
+- `expressions.realizeOrnaments(noteObj, keySig=None)` → **list** of notes; chains multiple
+  ornaments on one note correctly (`music21/expressions.py:55`).
+- `stream.makeNotation.realizeOrnaments(streamOrPart)` → new Stream, recursing into measures,
+  and it picks the key signature up from context (`music21/stream/makeNotation.py:1492`).
+  There is **no** `Stream.realizeOrnaments()` method.
+
+Every major ornament on `Note('C5', quarterLength=1.0)`:
+
+```python
+def realize(orn, n=None):
+    n = n or note.Note('C5', quarterLength=1.0)
+    n.expressions.append(orn)
+    return [(x.nameWithOctave, x.quarterLength) for x in expressions.realizeOrnaments(n)]
+```
+```
+Trill                     C5 D5 C5 D5 C5 D5 C5 D5            (8 x 0.125)
+Trill on a half note      16 x 0.125     (count scales with duration, not the unit)
+Trill(accidental='sharp') C5 D#5 ...
+InvertedTrill             C5 B4 C5 B4 ...
+HalfStepTrill             C5 D-5 ...        WholeStepTrill  C5 D5 ...
+Shake                     C5 D5 C5 D5                        (4 x 0.25)
+Mordent                   C5(.125) B4(.125) C5(.75)
+InvertedMordent           C5(.125) D5(.125) C5(.75)
+Turn                      D5 C5 B4 C5                        (4 x 0.25)
+InvertedTurn              B4 C5 D5 C5
+Turn(delay=DEFAULT_DELAY) C5(1.0) D5 C5 B4 C5                 on a half note
+Appoggiatura              D5(.5) C5(.5)
+InvertedAppoggiatura      B-4(.5) C5(.5)     HalfStepAppoggiatura  D-5(.5) C5(.5)
+Schleifer                 C5(1.0)                            <- NO-OP, never realizes
+Tremolo                   8 x C5(0.125)                      <- but see below
+Fermata / TextExpression  C5(1.0)                            <- not Ornaments, no realize
+ArpeggioMark on a Chord   Chord(1.0)                         <- no realize
+```
+
+Tuning knobs: `Trill.quarterLength` (default 0.125) sets the alternation speed;
+`Trill.nachschlag = True` turns the last alternation into the lower neighbour
+(`… C5 D5 C5 B4`); `Trill.accidental = pitch.Accidental('sharp')` forces the auxiliary.
+`.direction` is **read-only** on both `Trill` (`'up'`) and `Mordent` (`'down'`) — use the
+`InvertedTrill` / `InvertedMordent` / `InvertedTurn` classes to flip direction.
+
+Ornaments are diatonic and key-aware:
+
+```python
+expressions.realizeOrnaments(n_E5_with_trill, keySig=key.KeySignature(1))
+# ['E5', 'F#5', 'E5', 'F#5']       one sharp
+# ['E5', 'F5',  'E5', 'F5']        no sharps
+```
+Inside a stream the key signature is found automatically:
+```python
+m.insert(0, key.KeySignature(1))
+stream.makeNotation.realizeOrnaments(part)
+# {0.0} Note E  {0.125} Note F#  {0.25} Note E  {0.375} Note F#  ...
+```
+`orn.resolveOrnamentalPitches(srcNote, keySig=...)` then `orn.ornamentalPitches` gives you the
+auxiliary pitches without generating notes — e.g. `Turn` on C5 → `(D5, B4)`.
+
+**Two ornaments on one note double the music through the stream helper (verified bug).**
+`realizeElementExpressions` re-realizes the *original* note for each expression and appends
+every result:
+
+```python
+n.expressions += [expressions.Mordent(), expressions.InvertedMordent()]
+expressions.realizeOrnaments(n)               # C5 B4 C5 D5 C5   total 1.0   correct
+stream.makeNotation.realizeOrnaments(part)    # C5 B4 C5 | C5 D5 C5   total 2.0   WRONG
+```
+Keep one ornament per note, or realize note-by-note with `expressions.realizeOrnaments`.
+
+Realize onto a **copy** used for audio; the printed score should keep the ornament sign.
+
+## Tremolo and arpeggios
+
+`Tremolo.realize` splits the note with `splitAtQuarterLength`, which **ties the fragments**
+(`start / continue / … / stop`). MIDI export runs `stripTies(matchByPitch=True)`
+(`music21/midi/translate.py:2707`), so the fragments merge straight back into one long note:
+
+```python
+# tremolo realized, ties intact  -> [(0.0, 76), (1.0, 79)]      one note!
+for n in part.recurse().notes:
+    n.tie = None
+# tremolo realized, ties cleared -> [(0.0,76),(0.125,76),(0.25,76), ... (0.875,76),(1.0,79)]
+```
+`numberOfMarks` (0–8, default 3) sets the fragment length as `2**-numberOfMarks`:
+3 → 0.125, 2 → 0.25, 1 → 0.5.
+
+`ArpeggioMark` / `ArpeggioMarkSpanner` have no `realize()`. Roll your own strum:
+
+```python
+def realizeArpeggios(part, strumQL=0.0625):
+    out = part.cloneEmpty(derivationMethod='realizeArpeggios')
+    for el in part:
+        if el.isStream:
+            out.insert(el.offset, realizeArpeggios(el, strumQL)); continue
+        marks = [e for e in getattr(el, 'expressions', [])
+                 if isinstance(e, expressions.ArpeggioMark)]
+        if not marks or not isinstance(el, chord.Chord):
+            out.insert(el.offset, el); continue
+        pitches = sorted(el.pitches)
+        if marks[0].type == 'down':
+            pitches = list(reversed(pitches))
+        strum = 0.0 if marks[0].type == 'non-arpeggio' else strumQL
+        for i, pch in enumerate(pitches):
+            n = note.Note(pch, quarterLength=opFrac(el.quarterLength - i * strum))
+            n.volume = copy.deepcopy(el.volume)
+            out.insert(opFrac(el.offset + i * strum), n)
+    return out
+# C-E-G-C 'up' then 'down' -> onsets 0.0:60 0.0625:64 0.125:67 0.1875:72 |
+#                                    2.0:72 2.0625:67 2.125:64 2.1875:60
+```
+
+## Spanners
+
+A `Spanner` lives *in the Stream*, not on the notes, and holds weak references to its members
+(`music21/spanner.py:54`). Insert it at offset 0 of the Part; the notes must already be in that
+Part or a copy will break the link.
+
+```python
+sl = spanner.Slur(n1, n2, n3)          # or spanner.Slur(); sl.addSpannedElements([n1, n2])
+part.insert(0, sl)
+part.recurse().getElementsByClass(spanner.Slur)   # retrieval
+part.spannerBundle.getByClass(spanner.Slur)       # or via the bundle
+sl.getSpannedElements(); sl.getFirst(); sl.getLast(); sl.isFirst(n1)
+```
+`Spanner.fill(searchStream)` adds every element between first and last — but **only for spanners
+whose `.fillElementTypes` is non-empty**. Verified: `Ottava.fillElementTypes == [NotRest]` and
+fill works; `Slur` and `Crescendo` have `[]`, so `fill()` silently does nothing.
+```python
+ott = spanner.Ottava(m.notes[0], m.notes[2]); ott.fill(m)   # -> 3 elements
+sl = spanner.Slur(ns[0], ns[3]);              sl.fill(part) # -> still 2 elements
+```
+Verified: `Slur`, `Glissando`, `Line`, `Crescendo`, `TrillExtension`, `TremoloSpanner`,
+`PedalMark` change **no** MIDI events.
+
+`Ottava` is the exception with an opt-in:
+```python
+ott = spanner.Ottava(ns, type='8va')   # 8va, 8vb, 15ma, 15mb, 22da, 22db
+part.insert(0, ott)
+# MIDI unchanged: 60 62 64 65
+ott.performTransposition()             # music21/spanner.py:2031 — mutates the notes
+# MIDI now:       72 74 76 77 ; ott.undoTransposition() reverses it
+```
+`transposing=True` (default) means the written pitches are *not* yet shifted. When you build a
+score by hand, write the sounding pitches and set `transposing=False`, or write written pitches
+and call `performTransposition()` before export.
+
+## Repeats — these do affect playback
+
+MIDI export calls `s.expandRepeats()` automatically when the stream has measures
+(`music21/midi/translate.py:2276`).
+
+```python
+m1.leftBarline  = bar.Repeat(direction='start')
+m2.rightBarline = bar.Repeat(direction='end')
+s.expandRepeats()          # 4 measures -> 6; pitches C D C D E F
+# MIDI onsets: 0.0 4.0 8.0 12.0 16.0 20.0  (repeat played)
+```
+First/second endings:
+```python
+part.insert(0, spanner.RepeatBracket(m2, number=1))
+part.insert(0, spanner.RepeatBracket(m3, number=2))
+# expanded pitches: C D C E F
+```
+`repeat.DaCapo()` inserted at the end of the last measure → `C D E C D E`. The family:
+`DaCapo`, `DaCapoAlFine`, `DaCapoAlCoda`, `DalSegno`, `DalSegnoAlFine`, `DalSegnoAlCoda`,
+`Segno`, `Coda`, `Fine`, `AlSegno`. `repeat.Expander(part)` gives you
+`.isExpandable()` / `.process()` for validation before you rely on it.
+
+`bar.Repeat(direction='end', times=3)` sets the play count. Repeat expressions must be
+`insert`ed at the correct offset in the correct measure; misplaced ones raise
+`ExpanderException` at expansion time, which is the moment of MIDI export.
+
+## Swing and non-straight rhythm
+
+music21 has **no** swing support — no swing flag, no groove quantizer, nothing in
+`meter/`, `tempo.py`, or the MIDI writer (MusicXML 4's `<swing>` element is an explicit TODO in
+`musicxml/xmlSoundParser.py:153`). Do it by rewriting offsets and durations.
+
+```python
+from music21.common.numberTools import opFrac
+from fractions import Fraction
+import copy
+
+def swingEighths(part, ratio=Fraction(2, 3), subdiv=1.0):
+    """Triplet swing by default: beat splits ratio : (1 - ratio)."""
+    out = stream.Part()
+    for n in part.recurse().notesAndRests:
+        off = n.getOffsetInHierarchy(part)
+        nn = copy.deepcopy(n)
+        pos = off % subdiv
+        if pos == subdiv / 2:                       # the 'and' of the beat: push late
+            off = off - subdiv / 2 + subdiv * ratio
+            nn.quarterLength = n.quarterLength * (1 - ratio) * 2
+        elif pos == 0 and n.quarterLength == subdiv / 2:
+            nn.quarterLength = n.quarterLength * ratio * 2
+        out.insert(opFrac(off), nn)
+    return out
+```
+Eight straight eighths become, verified in the exported MIDI:
+```
+onsets 0.0  0.66667  1.0  1.66667  2.0  2.66667  3.0  3.66667
+```
+`ratio=Fraction(2,3)` is hard triplet swing, `Fraction(3,5)` is a softer shuffle, `0.5` is
+straight. Offsets become `Fraction`s — that is fine, music21 uses exact rationals and the MIDI
+writer rounds to ticks. **Swing the playback copy only**: swung offsets will not beam or notate
+sensibly. Combine with the beat-strength velocity trick above and a small random
+`velocity` jitter for a convincing groove.
+
+Other rhythm shapers you build the same way: fixed offset humanization
+(`n.offset += random.gauss(0, 0.01)`), agogic lengthening of strong beats, and
+`Duration.linked = False` + `n.duration.quarterLength` for notated-vs-sounding splits.
+
+## Gotchas
+
+1. **`Score.seconds` is `nan` with no `MetronomeMark`** — and so is `note.beatStrength` for a
+   note with no meter context. Neither raises; a silent `nan` propagates into your arithmetic.
+2. **A tempo mark in measure 2 means no tempo event at offset 0.** Always insert one at 0.0.
+3. **Identical tempo marks in two Parts emit duplicate `SET_TEMPO` events** (the dedup at
+   `music21/midi/translate.py:2376` only compares to the previous offset). Conflicting marks at
+   the same offset silently drop all but the first. Keep the tempo map in one place.
+4. **`TempoText`, `MetricModulation`, `RitardandoSpanner`, `AccelerandoSpanner` produce no
+   audio.** Only `MetronomeMark` does.
+5. **`referent='dotted-quarter'` raises `DurationException`.** Use `duration.Duration(1.5)`.
+6. **`Crescendo`/`Diminuendo` do not ramp velocity.** Set `n.volume.velocity` yourself.
+7. **A `Dynamic` inserted at Score level (outside any Part) is ignored by MIDI.** Put it in the Part.
+8. **`pppppp`, `ppppp`, `fffff`, `ffffff` have no scalar** and silently render as mezzo (0.5).
+9. **`n.volume.velocity` is multiplied by the surrounding dynamic** unless you also set
+   `n.volume.velocityIsRelative = False`.
+10. **Staccato changes velocity, not length.** No articulation ever changes note length on export.
+11. **Ornaments are silent until realized**, and realization is a separate Stream — realize a
+    playback copy and keep the ornament marks in the notated score.
+12. **Two ornaments on one note double the bar** through `stream.makeNotation.realizeOrnaments`.
+    Use `expressions.realizeOrnaments(note)` per note instead.
+13. **A realized `Tremolo` still sounds as one long note** — its fragments are tied and
+    `stripTies` merges them at export. Set `n.tie = None` on the fragments.
+14. **`Schleifer` has a `realize()` that does nothing**; `Fermata`, `TextExpression` and
+    `ArpeggioMark` have none at all.
+15. **Additive meters with a leading long group (`'3/8+2/8+2/8'`) get the wrong `beamSequence`**
+    (2+2+3), because `.summedNumerator` is `False` for `a/b+c/d` strings. Assign
+    `ts.beamSequence = MeterSequence('3/8+2/8+2/8')`.
+16. **`ts.beatSequence.partition([2,2,3])` alone is not enough** — it destroys the sub-beat level
+    (`getBeatDepth` collapses to 1) and leaves the old accent weights. Follow with
+    `subdividePartitionsEqual()` and `_setDefaultAccentWeights(3)`, or just use the additive string.
+17. **`ts.beatDuration` raises `TimeSignatureException: non-uniform beat unit`** on any additive
+    meter. Use `ts.getBeatDuration(offset)` instead.
+18. **`getAccentWeight` without `forcePositionMatch=True`** returns the span's weight for any
+    offset inside it, so off-beats look as strong as downbeats. It also raises `MeterException`
+    past the bar unless `permitMeterModulus=True`.
+19. **6/8 defaults to two beats, not six** (and 3/8 to one). Use `'slow 6/8'` for six, or set
+    `ts.beatCount = 6`.
+20. **Non-power-of-two denominators export a wrong MIDI time signature** — `4/3` writes
+    `04 01` (= 4/2). Harmless for audio, misleading if you parse the file back.
+21. **`Ottava` does nothing to playback** until `performTransposition()`, which permanently
+    rewrites the note pitches.
+22. **Repeat expansion happens at MIDI-export time**, so a malformed `DaCapo`/bracket surfaces as
+    an `ExpanderException` from `write('midi')`. Call `s.expandRepeats()` yourself first to
+    fail early.
+23. **There is no swing support.** Rewrite offsets by hand and never notate the swung copy.
