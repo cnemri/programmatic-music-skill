@@ -175,6 +175,12 @@ def mix_stems(wavs: Sequence[str], stems: Sequence[Stem], out_wav: str,
     ``target_lufs`` -14 is streaming-normal and right for driving music; use
     -16 with ``lra=14`` for something dynamic and quiet like a free-rhythm
     piece, so the compressor does not flatten the shape you composed.
+
+    ``lra`` is a **target loudnorm compresses toward**, not a ceiling. Ask for
+    less range than the music has and it takes the difference out of your
+    dynamic arc -- silently, and downstream of the compressor, so every stem
+    still measures correctly. Set it *above* the range you composed: 20 leaves
+    the arc alone. See references/11-audio-rendering.md.
     """
     if len(wavs) != len(stems):
         raise ValueError('wavs and stems must be the same length')
