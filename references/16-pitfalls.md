@@ -20,7 +20,7 @@ you cannot hear why.
 ---
 
 
-**201 recorded pitfalls across 16 chapters.**
+**202 recorded pitfalls across 16 chapters.**
 
 
 ## The music21 Object Model and Stream System
@@ -320,7 +320,7 @@ Further traps, decreasing damage:
 
 ## The MIDI Layer: How Your Music Becomes Audible
 
-*from `06-midi-deep.md` — 25 item(s)*
+*from `06-midi-deep.md` — 26 item(s)*
 
 1. **Two Parts with the same instrument share a MIDI channel and cut each other's notes short.**
    `channelByInstrument` is keyed by `midiProgram` (`translate.py:2395`). Neither
@@ -381,6 +381,12 @@ Further traps, decreasing damage:
 25. **More than 15 melodic parts cannot be rendered in one MIDI file.** Sixteen channels
     minus percussion leaves fifteen. Allocating past it silently produced channel 17+, which
     is not a channel: those parts come back silent or folded onto another patch.
+
+26. **Never flatten a track that music21 split for microtones.** A quarter tone gets a
+    `PITCH_BEND` and anything sounding with it is moved to its own channel so the bend misses
+    it. Forcing both back onto one channel detunes the plain note and cancels the bend under
+    the microtonal one. `retrack` raises on this; to play a whole maqam, pin a channel with
+    `midiio.set_channel_bend` and write the quarter-flat degree as its natural instead.
 
 
 ## Audio to Score: Transcribing Recordings into music21

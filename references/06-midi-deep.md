@@ -809,3 +809,9 @@ WITHOUT retrack  channels [[], [10], [1], [2], [2]]   peak RMS 0.1779 (15% of en
 25. **More than 15 melodic parts cannot be rendered in one MIDI file.** Sixteen channels
     minus percussion leaves fifteen. Allocating past it silently produced channel 17+, which
     is not a channel: those parts come back silent or folded onto another patch.
+
+26. **Never flatten a track that music21 split for microtones.** A quarter tone gets a
+    `PITCH_BEND` and anything sounding with it is moved to its own channel so the bend misses
+    it. Forcing both back onto one channel detunes the plain note and cancels the bend under
+    the microtonal one. `retrack` raises on this; to play a whole maqam, pin a channel with
+    `midiio.set_channel_bend` and write the quarter-flat degree as its natural instead.

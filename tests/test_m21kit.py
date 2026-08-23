@@ -480,3 +480,76 @@ def test_check_ranges_does_not_double_report_parts_sharing_a_name():
     total = int([ln for ln in out.splitlines()
                  if 'out of range' in ln][0].split()[0])
     assert listed == total == 2, f'listed {listed}, total {total}\n{out}'
+
+
+# ------------------------------------- regressions: microtonal pitch bend ---
+def _microtone_score():
+    """A plain note and a quarter-flat sounding together -- music21 puts the
+    second on its own channel so the bend does not touch the first."""
+    from music21 import note as m21note
+    p = stream.Part()
+    p.insert(0, instrument.Flute())
+    p.insert(0, m21note.Rest(quarterLength=1))
+    p.insert(1, m21note.Note('C4', quarterLength=1))
+    p.insert(1, m21note.Note('E`4', quarterLength=1))
+    sc = stream.Score()
+    sc.insert(0, p)
+    return sc
+
+
+def test_retrack_refuses_to_flatten_a_microtone_spill():
+    """Collapsing those two channels applies the -50c bend to the plain C4 and
+    cancels it under the quarter tone. Silent detuning; refuse instead."""
+    with tempfile.TemporaryDirectory() as d:
+        with pytest.raises(ValueError, match='microtonal pitch-bend spill'):
+            midiio.write_midi(_microtone_score(), os.path.join(d, 'a.mid'),
+                              channels=[1])
+        # explicit opt-in still works, for callers who know the bends agree
+        midiio.write_midi(_microtone_score(), os.path.join(d, 'b.mid'),
+                          channels=[1], allow_microtone_collapse=True)
+
+
+def test_set_channel_bend_pins_the_channel():
+    """A constant channel detuning is how you play a maqam: the quarter-flat
+    degree is written as its natural and the channel is held at -50 cents."""
+    from music21 import midi as m21midi
+    from music21 import note as m21note
+    p = stream.Part()
+    p.insert(0, instrument.Flute())
+    p.insert(0, m21note.Note('E4', quarterLength=2))
+    p.insert(2, m21note.Note('B4', quarterLength=2))
+    sc = stream.Score()
+    sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'bent.mid')
+        midiio.write_midi(sc, path, channels=[3], bends={3: -50})
+        mf = m21midi.MidiFile()
+        mf.open(path)
+        mf.read()
+        mf.close()
+
+    CVM = m21midi.ChannelVoiceMessages
+    evs = [e for t in mf.tracks for e in t.events]
+    bends = [e.parameter2 for e in evs if e.type == CVM.PITCH_BEND]
+    # 8192 - (50/200)*8192 = 6144 -> MSB 48. Every bend on the channel must be
+    # that value: music21 appends a neutral one at offset 0 that would
+    # otherwise cancel ours (translate.py:1699-1715).
+    assert bends and set(bends) == {48}, bends
+    # RPN 0 pins the bend range, which music21 never emits
+    cc = [(e.parameter1, e.parameter2) for e in evs
+          if e.type == CVM.CONTROLLER_CHANGE]
+    assert (101, 0) in cc and (100, 0) in cc and (6, 2) in cc, cc
+
+
+def test_samai_and_yuruk_grooves_match_their_iqa():
+    """The two cycles the samai / muwashshah repertoire is built on."""
+    thaqil = drums.GROOVES['samai_thaqil']
+    assert thaqil['meter'] == '10/8' and thaqil['bar'] == 5.0
+    strong = sorted(o for o, k, _ in thaqil['hits'] if k != 'darbuka_ka')
+    # D . . T . D D T . .  -> beats 1, 4, 6, 7, 8 of ten eighths
+    assert strong == [0.0, 1.5, 2.5, 3.0, 3.5], strong
+
+    yuruk = drums.GROOVES['yuruk_samai']
+    assert yuruk['meter'] == '6/8' and yuruk['bar'] == 3.0
+    strong = sorted(o for o, k, _ in yuruk['hits'] if k != 'darbuka_ka')
+    assert strong == [0.0, 1.5, 2.5], strong

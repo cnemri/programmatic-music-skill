@@ -247,6 +247,7 @@ def audio_info(path: str) -> dict:
 # ---------------------------------------------------------------------------
 def score_to_mp3(score, out_mp3: str, stems: Sequence[Stem] | None = None,
                  sf2: str | None = None, channels: Sequence[int] | None = None,
+                 bends: dict[int, float] | None = None,
                  tags: dict | None = None, target_lufs: float = -14.0,
                  lra: float = 11.0, fade_out: float = 4.0,
                  workdir: str | None = None, keep: bool = False,
@@ -254,7 +255,9 @@ def score_to_mp3(score, out_mp3: str, stems: Sequence[Stem] | None = None,
     """The whole pipeline: music21 Score -> mastered mp3.
 
     One :class:`Stem` per Part, in order. Omit ``stems`` for a flat mix at unity.
-    Set ``channels`` with 10 for any percussion Part.
+    Set ``channels`` with 10 for any percussion Part. ``bends`` is
+    ``{channel: cents}`` for microtonal work -- see
+    :func:`m21kit.midiio.set_channel_bend`.
 
     Returns a dict of the paths produced and the final audio stats.
     """
@@ -273,7 +276,7 @@ def score_to_mp3(score, out_mp3: str, stems: Sequence[Stem] | None = None,
         raise ValueError(f'{len(parts)} parts but {len(stems)} stems')
 
     mids = midiio.write_stems(score, os.path.join(tmp, 'mid'),
-                              channels=channels,
+                              channels=channels, bends=bends,
                               names=[s.name for s in stems])
     wavs = []
     for m, s in zip(mids, stems):
@@ -291,7 +294,7 @@ def score_to_mp3(score, out_mp3: str, stems: Sequence[Stem] | None = None,
     to_mp3(master, out_mp3, tags=tags)
 
     full_mid = os.path.join(tmp, 'full.mid')
-    midiio.write_midi(score, full_mid, channels=channels)
+    midiio.write_midi(score, full_mid, channels=channels, bends=bends)
 
     info = audio_info(out_mp3)
     if verbose:
