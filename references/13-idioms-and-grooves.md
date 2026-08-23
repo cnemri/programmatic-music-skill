@@ -100,7 +100,9 @@ path through the maqam — is the form: establish the tonic jins, move to the up
 peak, descend, cadence (*qafla*) back to the tonic.
 
 **Rhythm.** The *iqa'at* in `drums.GROOVES`: `maqsum`, `baladi`, `saidi`, `ayyub`,
-`karsilama` (9/8 as 2+2+2+3). Dum (low) and tek (high) are the two strokes and the
+`karsilama` (9/8 as 2+2+2+3), and the two long cycles the samai and the Andalusian
+*muwashshah* are built on — `samai_thaqil` (10/8, felt 3+2+2+3) and `yuruk_samai` (6/8,
+the faster cycle a samai turns to in its fourth khana before the taslim returns). Dum (low) and tek (high) are the two strokes and the
 pattern of them is the rhythm's name. Thin one out for a quiet section with
 `groove(..., skip=['darbuka_ka'])` rather than by dropping the velocity — a section is
 loud because of how many strokes it spends, not how hard each one lands.

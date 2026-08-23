@@ -26,7 +26,7 @@ from typing import Iterable, Sequence
 from music21 import midi, stream, tempo
 
 __all__ = [
-    'MAX_CHANNEL', 'default_channels',
+    'MAX_CHANNEL', 'default_channels', 'set_channel_bend',
     'TempoMap',
     'add_tempo_map',
     'retrack',
@@ -145,7 +145,8 @@ def default_channels(n: int) -> list[int]:
     return out
 
 
-def retrack(mf: midi.MidiFile, channels: Sequence[int]) -> midi.MidiFile:
+def retrack(mf: midi.MidiFile, channels: Sequence[int],
+            allow_microtone_collapse: bool = False) -> midi.MidiFile:
     """Force one MIDI channel per track, in order, on tracks 1..n.
 
     ``channels[i]`` is applied to ``mf.tracks[i + 1]`` (track 0 is the conductor
@@ -162,14 +163,90 @@ def retrack(mf: midi.MidiFile, channels: Sequence[int]) -> midi.MidiFile:
     for idx, ch in enumerate(channels, start=1):
         if idx >= len(mf.tracks):
             break
+        trk = mf.tracks[idx]
+        # Microtones are the one case where music21 allocates a second channel
+        # by itself: a microtonal note gets a PITCH_BEND, and anything sounding
+        # with it is pushed onto its own channel so the bend does not touch it
+        # (translate.py:1615-1644). Flattening that back onto one channel makes
+        # the bend apply to every note on it -- the plain note goes out of tune
+        # and the reset after the microtonal note-off cancels the bend while a
+        # later one is still sounding. Silent, and worse than the collision
+        # retrack exists to prevent.
+        used = [c for c in trk.getChannels() if c is not None]
+        if len(used) > 1 and ch != DRUM_CHANNEL and not allow_microtone_collapse:
+            raise ValueError(
+                f'track {idx} uses channels {used}: microtonal pitch-bend spill. '
+                f'Collapsing it onto channel {ch} would detune the notes that '
+                f'music21 moved aside. Give this part its own bent channel via '
+                f'`bends=` and write the note as a natural, or pass '
+                f'allow_microtone_collapse=True if you know the bends agree.')
         keep = []
-        for ev in mf.tracks[idx].events:
+        for ev in trk.events:
             if ch == DRUM_CHANNEL and ev.type == midi.ChannelVoiceMessages.PROGRAM_CHANGE:
                 continue
             if ev.channel is not None:
                 ev.channel = ch
             keep.append(ev)
-        mf.tracks[idx].events = keep
+        trk.events = keep
+    return mf
+
+
+def _ev(track, kind, channel, p1, p2, time=0):
+    """One MidiEvent preceded by its own DeltaTime, as the format requires."""
+    dt = midi.DeltaTime(track)
+    dt.time = time
+    e = midi.MidiEvent(track)
+    e.type = kind
+    e.channel = channel
+    e.parameter1 = p1
+    e.parameter2 = p2
+    return [dt, e]
+
+
+def set_channel_bend(mf: midi.MidiFile, channel: int, cents: float,
+                     bend_range: int = 2, track: int | None = None) -> midi.MidiFile:
+    """Pin a whole channel to a constant detuning, in cents.
+
+    This is how you play a maqam. A quarter-flat degree is written as the
+    natural and put on a channel held ``-50`` cents; because the bend never
+    changes, it cannot collide with anything else on that channel and it
+    survives polyphony, unlike music21's per-note bends.
+
+    Also emits RPN 0 to set the pitch-bend sensitivity explicitly. music21
+    never does (`base.py:641`), so it silently assumes the GM default of +/-2
+    semitones -- and on a synth configured for +/-12 your quarter tone comes
+    out six times too flat.
+
+    Any PITCH_BEND already on the channel is rewritten to the same value rather
+    than removed. music21 appends a neutral bend at offset 0 *after* building
+    the track and the sort is stable, so it lands after anything you prepend and
+    cancels it (translate.py:1699-1715); and deleting the event instead would
+    drop its DeltaTime and shift everything after it. Rewriting fixes the
+    cancellation and keeps the timeline exact.
+    """
+    CVM = midi.ChannelVoiceMessages
+    idx = track if track is not None else next(
+        (i for i, t in enumerate(mf.tracks)
+         if channel in [c for c in t.getChannels() if c is not None]), None)
+    if idx is None:
+        raise ValueError(f'no track uses channel {channel}')
+    trk = mf.tracks[idx]
+    head = []
+    head += _ev(trk, CVM.CONTROLLER_CHANGE, channel, 101, 0)      # RPN MSB
+    head += _ev(trk, CVM.CONTROLLER_CHANGE, channel, 100, 0)      # RPN LSB -> 0
+    head += _ev(trk, CVM.CONTROLLER_CHANGE, channel, 6, bend_range)
+    head += _ev(trk, CVM.CONTROLLER_CHANGE, channel, 38, 0)
+    dt = midi.DeltaTime(trk)
+    dt.time = 0
+    pb = midi.MidiEvent(trk)
+    pb.type = CVM.PITCH_BEND
+    pb.channel = channel
+    pb.setPitchBend(float(cents), bendRange=bend_range)
+    head += [dt, pb]
+    for e in trk.events:
+        if e.type == CVM.PITCH_BEND and e.channel == channel:
+            e.setPitchBend(float(cents), bendRange=bend_range)
+    trk.events = head + trk.events
     return mf
 
 
@@ -184,7 +261,9 @@ def _dump(mf: midi.MidiFile, path: str) -> str:
 
 def write_midi(score: stream.Score,
                path: str,
-               channels: Sequence[int] | None = None) -> str:
+               channels: Sequence[int] | None = None,
+               bends: dict[int, float] | None = None,
+               allow_microtone_collapse: bool = False) -> str:
     """Write a Score to MIDI with explicit per-part channels.
 
     Goes through ``midi.translate.streamToMidiFile`` directly rather than
@@ -198,14 +277,18 @@ def write_midi(score: stream.Score,
     if channels is None:
         channels = default_channels(len(parts))
     mf = midi.translate.streamToMidiFile(score)
-    retrack(mf, channels)
+    retrack(mf, channels, allow_microtone_collapse)
+    for ch, cents in (bends or {}).items():
+        set_channel_bend(mf, ch, cents)
     return _dump(mf, path)
 
 
 def write_stems(score: stream.Score,
                 out_dir: str,
                 channels: Sequence[int] | None = None,
-                names: Sequence[str] | None = None) -> list[str]:
+                names: Sequence[str] | None = None,
+                bends: dict[int, float] | None = None,
+                allow_microtone_collapse: bool = False) -> list[str]:
     """Write one single-part MIDI file per Part, for stem rendering.
 
     Each stem keeps its own channel assignment, so a percussion stem still
@@ -227,7 +310,9 @@ def write_stems(score: stream.Score,
         one = stream.Score()
         one.insert(0, p)
         mf = midi.translate.streamToMidiFile(one)
-        retrack(mf, [ch])
+        retrack(mf, [ch], allow_microtone_collapse)
+        if bends and ch in bends:
+            set_channel_bend(mf, ch, bends[ch])
         paths.append(_dump(mf, os.path.join(out_dir, f'{i}_{nm}.mid')))
     return paths
 

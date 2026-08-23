@@ -320,6 +320,25 @@ GROOVES: dict[str, dict] = {
                  (1, 'darbuka_dum', .9), (1.5, 'darbuka_tek', .75)],
                 meter='2/4'),
 
+    'samai_thaqil': _g(
+        'D - - T - D D T - -. The 10/8 of the samai and the Andalusian '
+        'muwashshah; felt 3+2+2+3, not as five twos.',
+        5.0, 1,
+        [(0, 'darbuka_dum', 1.0), (1.5, 'darbuka_tek', .8),
+         (2.5, 'darbuka_dum', .95), (3.0, 'darbuka_dum', .85),
+         (3.5, 'darbuka_tek', .8)]
+        + [(i * .5, 'darbuka_ka', .28) for i in range(10) if i not in (0, 3, 5, 6, 7)],
+        meter='10/8'),
+
+    'yuruk_samai': _g(
+        'D - - T - T. The fast 6/8 a samai turns to in its fourth khana, '
+        'before the taslim returns in 10/8.',
+        3.0, 1,
+        [(0, 'darbuka_dum', 1.0), (1.5, 'darbuka_tek', .8),
+         (2.5, 'darbuka_tek', .75)]
+        + [(i * .5, 'darbuka_ka', .3) for i in range(6) if i not in (0, 3, 5)],
+        meter='6/8'),
+
     'karsilama': _g('9/8 as 2+2+2+3 -- Turkish/Balkan.', 4.5, 1,
                     [(0, 'darbuka_dum', 1.0), (1, 'darbuka_tek', .7),
                      (2, 'darbuka_dum', .9), (3, 'darbuka_tek', .7),

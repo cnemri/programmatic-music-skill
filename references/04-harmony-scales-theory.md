@@ -368,8 +368,17 @@ scale.ScalaScale('C4', 'pyth_12').tune(p)
 # G4(+2c)/67.0195  A4(+6c)/69.0587  B4(+10c)/71.0978  C5/72.0
 ```
 
-**Export:** quarter tones round-trip through MusicXML intact but MIDI silently rounds them to
-the nearest semitone (`E\`4` → `E4`). Microtonal MIDI needs hand-written pitch bend, one
+**Export:** quarter tones round-trip through MusicXML intact. **MIDI does carry them**, contrary
+to the usual assumption — music21 emits a `PITCH_BEND` before the note-on and a reset after the
+note-off, and pushes overlapping microtonal notes onto their own channels
+(`translate.py:544`, `:1654`). See `02-pitch-notes-chords.md` for the transcript and the three
+hard limits: the bend range is assumed to be the GM default, a microtonal note at offset 0 has its
+bend cancelled, and nothing reads the bend back on import.
+
+Those limits, plus the fact that per-note bends collide with any fixed channel allocation, are why
+a whole maqam is better served by pinning a channel: write the quarter-flat degree as its natural
+and hold the channel at −50 cents with `midiio.set_channel_bend`. The bend never changes, so it
+survives polyphony and cannot be cancelled. Hand-written pitch bend, one
 channel per voice.
 
 ---
