@@ -101,7 +101,9 @@ peak, descend, cadence (*qafla*) back to the tonic.
 
 **Rhythm.** The *iqa'at* in `drums.GROOVES`: `maqsum`, `baladi`, `saidi`, `ayyub`,
 `karsilama` (9/8 as 2+2+2+3). Dum (low) and tek (high) are the two strokes and the
-pattern of them is the rhythm's name.
+pattern of them is the rhythm's name. Thin one out for a quiet section with
+`groove(..., skip=['darbuka_ka'])` rather than by dropping the velocity — a section is
+loud because of how many strokes it spends, not how hard each one lands.
 
 **The giveaway.** Western triadic harmony under a maqam melody; rounding a microtonal
 maqam and calling it authentic.

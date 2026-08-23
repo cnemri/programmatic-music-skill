@@ -387,3 +387,96 @@ def test_retrack_rejects_channels_outside_1_16():
             midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[17])
         with pytest.raises(ValueError, match='must be 1-16'):
             midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[0])
+
+
+# -------------------------------------------------- regressions: drums ---
+def test_groove_fill_respects_only_and_skip():
+    from music21 import stream as _s
+    keys = lambda p: sorted({int(n.pitch.midi) for n in p.notes})
+
+    # rock_basic has no hand_clap at all, so only=['hand_clap'] must be silent.
+    # The fill used to ignore the filter and emit snares -- the sole output was
+    # the one instrument the caller had excluded.
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', only=['hand_clap'], fill=True)
+    assert keys(p) == []
+
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', skip=['snare'], fill=True)
+    assert drums.GM['snare'] not in keys(p)
+
+    # ...and an unfiltered fill still fills.
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', fill=True)
+    assert drums.GM['snare'] in keys(p)
+
+
+def test_every_groove_is_internally_consistent():
+    """Hits must fit the cycle, and the bar length must match the meter."""
+    from fractions import Fraction
+    for name, g in drums.GROOVES.items():
+        span = g['bar'] * g['bars']
+        offs = [o for o, _, _ in g['hits']]
+        assert min(offs) >= 0, name
+        assert max(offs) < span, f'{name}: hit at {max(offs)} outside {span}'
+        if '/' in g['meter']:
+            num, den = g['meter'].split('/')
+            implied = float(Fraction(int(num) * 4, int(den)))
+            assert abs(implied - g['bar']) < 1e-9, \
+                f"{name}: bar {g['bar']} but meter {g['meter']} implies {implied}"
+
+
+# ------------------------------------------------ regressions: scripts ---
+def _load_script(stem):
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        '..', 'scripts', f'{stem}.py')
+    spec = importlib.util.spec_from_file_location(stem, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_analyze_score_reads_tempo_offsets_from_the_hierarchy():
+    """A tempo map must not collapse onto bar 1.
+
+    `mm.offset` is the offset inside the mark's immediate container. Once a
+    score has measures that container is a Measure, so every mark on a barline
+    reads 0.0 and the whole map lands on the downbeat.
+    """
+    from music21 import note as m21note
+    analyze = _load_script('analyze_score')
+    sc = stream.Score()
+    p = stream.Part()
+    for i in range(4):
+        p.insert(i * 4.0, m21note.Note('C4', quarterLength=4))
+    midiio.add_tempo_map([p], [(0.0, 60), (4.0, 90), (8.0, 120), (12.0, 150)])
+    p.makeMeasures(inPlace=True)          # this is what breaks mm.offset
+    sc.insert(0, p)
+    got = [(t['offset'], t['bpm']) for t in analyze.tempos(sc)]
+    assert got == [(0.0, 60.0), (4.0, 90.0), (8.0, 120.0), (12.0, 150.0)], got
+
+
+def test_check_ranges_does_not_double_report_parts_sharing_a_name():
+    """Violations were matched to parts by NAME, so duplicate names each
+    printed the other's and the listing did not add up to the total."""
+    import subprocess
+    from music21 import note as m21note
+    sc = stream.Score()
+    for _ in range(2):
+        p = stream.Part()
+        p.partName = 'Acoustic Guitar'          # deliberately the same name
+        p.insert(0, instrument.AcousticGuitar())
+        p.insert(0, m21note.Note('C2', quarterLength=1))   # below E2
+        sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 's.musicxml')
+        sc.write('musicxml', fp=path)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              '..', 'scripts', 'check_ranges.py')
+        out = subprocess.run([sys.executable, script, path],
+                             capture_output=True, text=True).stdout
+    listed = sum(1 for ln in out.splitlines() if 'semitone(s)' in ln)
+    total = int([ln for ln in out.splitlines()
+                 if 'out of range' in ln][0].split()[0])
+    assert listed == total == 2, f'listed {listed}, total {total}\n{out}'
