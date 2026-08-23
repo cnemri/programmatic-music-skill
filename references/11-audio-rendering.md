@@ -118,6 +118,24 @@ amix(normalize=0) → acompressor → loudnorm → afade
 * `acompressor=threshold=-18dB:ratio=2.3:attack=14:release=240:makeup=2` — gentle glue.
   Higher ratios flatten the dynamic arc you spent the whole piece building.
 * `loudnorm=I=-14:TP=-1.2:LRA=11` — streaming-normal.
+
+**`LRA` is a target loudnorm compresses toward, not a ceiling and not a report.** Ask for
+less range than the music has and it takes the difference out of your arc — quietly, and
+downstream of the compressor, so every stem still measures correctly. Measured on a track
+whose sections naturally span 11 dB:
+
+| requested `lra` | resulting section range | loudest section |
+|---|---|---|
+| 9 | 4.5 dB | a four-bar *build* |
+| 14 | 7.1 dB | first chorus |
+| 20 | 8.7 dB | **final chorus** — correct |
+
+The symptom is maddening from the inside: every stem measures louder in the climax than in
+the first chorus, and the mixed section still comes out quieter. Diagnose it by mixing the
+stems with gain/pan/EQ only — no compressor, no loudnorm — and measuring the sections
+there. If the arc is right pre-master, it is not the arrangement's problem. **Ask for more
+range than the music has** and loudnorm leaves it alone.
+
   For quiet, dynamic, or free-rhythm music use `I=-16:LRA=14`, or the normaliser squashes
   the contrast between a whispered opening and a climax.
 * `afade=t=out:st=<end-4.5>:d=4.5` — compute the start from the *actual rendered duration*,
@@ -141,6 +159,10 @@ amix(normalize=0) → acompressor → loudnorm → afade
   and no error. Set `synth.polyphony=768`.
 - **Percussion silently plays as a piano** if the part is not on channel 10. See
   `06-midi-deep.md`; pass `channels=[..., 10]`.
+- **`loudnorm`'s `LRA` compresses toward its target.** It is not a report and not a ceiling:
+  request 9 on material that spans 11 and it flattens the difference out of your dynamic
+  arc, downstream of the compressor, where every stem still measures correctly. Request
+  more range than the music has. Diagnose with a gain/EQ-only mix.
 
 ---
 

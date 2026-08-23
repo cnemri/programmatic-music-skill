@@ -320,6 +320,33 @@ GROOVES: dict[str, dict] = {
                  (1, 'darbuka_dum', .9), (1.5, 'darbuka_tek', .75)],
                 meter='2/4'),
 
+    'malfuf': _g(
+        'D - - T - - T -. Fast 2/4, the 3+3+2 that drives Arabic dance and '
+        'zaffa processions. The engine of anything energetic.',
+        2.0, 1,
+        [(0, 'darbuka_dum', 1.0), (0.75, 'darbuka_tek', .85),
+         (1.5, 'darbuka_tek', .8)]
+        + [(i * .25, 'darbuka_ka', .3) for i in range(8) if i not in (0, 3, 6)],
+        meter='2/4'),
+
+    'fallahi': _g(
+        'D T D T. Fast 2/4 folk (fallahi/shaabi): a maqsum with the gaps '
+        'filled, four to the bar and no room to breathe.',
+        2.0, 1,
+        [(0, 'darbuka_dum', 1.0), (0.5, 'darbuka_tek', .75),
+         (1.0, 'darbuka_dum', .9), (1.5, 'darbuka_tek', .8)]
+        + [(i * .25, 'darbuka_ka', .32) for i in range(8) if i % 2],
+        meter='2/4'),
+
+    'masmudi_saghir': _g(
+        'D D - T - D - T. Maqsum with a doubled dum on the front -- the '
+        'heavier reading of the same 4/4, for a chorus.',
+        4.0, 1,
+        [(0, 'darbuka_dum', 1.0), (0.5, 'darbuka_dum', .8),
+         (1.5, 'darbuka_tek', .8), (2.5, 'darbuka_dum', .9),
+         (3.0, 'darbuka_tek', .75), (3.5, 'darbuka_tek', .6)]
+        + [(i * .5, 'darbuka_ka', .3) for i in range(8)]),
+
     'samai_thaqil': _g(
         'D - - T - D D T - -. The 10/8 of the samai and the Andalusian '
         'muwashshah; felt 3+2+2+3, not as five twos.',

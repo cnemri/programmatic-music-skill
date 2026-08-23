@@ -100,9 +100,16 @@ path through the maqam — is the form: establish the tonic jins, move to the up
 peak, descend, cadence (*qafla*) back to the tonic.
 
 **Rhythm.** The *iqa'at* in `drums.GROOVES`: `maqsum`, `baladi`, `saidi`, `ayyub`,
-`karsilama` (9/8 as 2+2+2+3), and the two long cycles the samai and the Andalusian
+`karsilama` (9/8 as 2+2+2+3); the fast ones that carry dance music — `malfuf` (2/4, the
+3+3+2 engine), `fallahi` (2/4 shaabi, four to the bar) and `masmudi_saghir` (4/4, a maqsum
+with a doubled dum, for a chorus); and the two long cycles the samai and the Andalusian
 *muwashshah* are built on — `samai_thaqil` (10/8, felt 3+2+2+3) and `yuruk_samai` (6/8,
-the faster cycle a samai turns to in its fourth khana before the taslim returns). Dum (low) and tek (high) are the two strokes and the
+the faster cycle a samai turns to in its fourth khana before the taslim returns).
+
+**A darbouka solo is not a groove.** Energy in this music comes from the *taqsim darbuka*:
+the ensemble drops out, the drum takes eight bars of rolls, accents and answered phrases,
+and the band slams back in. Write it by hand with `drums.hit` — sixteenth ka rolls under
+displaced dums, a crescendo across the last two bars, and the return landing on beat 1. Dum (low) and tek (high) are the two strokes and the
 pattern of them is the rhythm's name. Thin one out for a quiet section with
 `groove(..., skip=['darbuka_ka'])` rather than by dropping the velocity — a section is
 loud because of how many strokes it spends, not how hard each one lands.
