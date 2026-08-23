@@ -22,6 +22,7 @@ See references/15-verifying-without-listening.md.
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 import wave
 from collections import Counter
@@ -324,6 +325,31 @@ def _decode(path: str, sr: int = 22050):
     return np.frombuffer(p.stdout, dtype='<i2').astype('float32') / 32768.0, sr
 
 
+_DECODE_CACHE: dict = {}
+
+
+def _decode_cached(path: str, sr: int = 22050):
+    """:func:`_decode` with a one-entry memo, keyed on the file's identity.
+
+    Every audio check here decodes the whole file and then slices it, and
+    :func:`harmony_match` calls :func:`chroma` once per bar. On a three-minute
+    mp3 that was forty full decodes -- 9.4s of ffmpeg to answer a question one
+    0.4s decode already had the data for.
+    """
+    import os
+    try:
+        st = os.stat(path)
+        k = (os.path.abspath(path), sr, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return _decode(path, sr)
+    got = _DECODE_CACHE.get(k)
+    if got is None:
+        got = _decode(path, sr)
+        _DECODE_CACHE.clear()        # these arrays are tens of MB; keep one
+        _DECODE_CACHE[k] = got
+    return got
+
+
 def audio_stats(path: str) -> dict:
     """Duration, peak, integrated loudness, and whether it clips.
 
@@ -331,7 +357,7 @@ def audio_stats(path: str) -> dict:
     gain. Integrated LUFS tells you whether the master hit its target.
     """
     import numpy as np
-    x, sr = _decode(path)
+    x, sr = _decode_cached(path)
     peak = float(np.abs(x).max()) if len(x) else 0.0
     out = {'duration_s': round(len(x) / sr, 2),
            'peak_dbfs': round(20 * math.log10(peak + 1e-12), 2),
@@ -362,7 +388,7 @@ def section_levels(path: str, sections: Sequence[tuple[str, float, float]]) -> l
     often it is not, because a dense accompaniment section out-shouts it.
     """
     import numpy as np
-    x, sr = _decode(path)
+    x, sr = _decode_cached(path)
     out = []
     for name, a, b in sections:
         seg = x[int(a * sr):int(b * sr)]
@@ -388,7 +414,7 @@ def pulse(path: str, start: float = 0.0, end: float | None = None,
     groove actually landed at the tempo you wrote.
     """
     import numpy as np
-    x, sr = _decode(path)
+    x, sr = _decode_cached(path)
     if end is None:
         end = len(x) / sr
     x = x[int(start * sr):int(end * sr)]
@@ -416,7 +442,7 @@ def pulse(path: str, start: float = 0.0, end: float | None = None,
 def chroma(path: str, start: float, end: float) -> list[float]:
     """Normalised 12-bin pitch-class energy of an audio segment."""
     import numpy as np
-    x, sr = _decode(path)
+    x, sr = _decode_cached(path)
     seg = x[int(start * sr):int(end * sr)]
     if len(seg) < 512:
         return [0.0] * 12
@@ -437,26 +463,62 @@ for _r in range(12):
     _TPL[NAMES[_r] + '7'] = [(_r + i) % 12 for i in (0, 4, 7, 10)]
     _TPL[NAMES[_r] + 'dim'] = [(_r + i) % 12 for i in (0, 3, 6)]
 
+_ROOT_RE = re.compile(r'^\s*([A-Ga-g])([#b\u266f\u266d]*)')
+_LETTER_PC = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11}
+
+
+def chord_root_pc(name: str) -> int | None:
+    """Pitch class 0-11 of a chord symbol's root, or None if it does not parse.
+
+    Accepts flats as readily as sharps and ignores the suffix entirely, so
+    ``Eb``, ``D#``, ``Cmaj7``, ``F#m7b5``, ``Gsus4`` and ``Am`` all resolve.
+    Comparing roots as pitch classes is the only way to do it: matching the
+    printed name means ``Eb`` never equals ``D#``, and stripping a suffix by
+    characters mangles anything but the four shortest ones.
+    """
+    m = _ROOT_RE.match(str(name))
+    if not m:
+        return None
+    pc = _LETTER_PC[m.group(1).upper()]
+    for ch in m.group(2):
+        pc += 1 if ch in '#\u266f' else -1
+    return pc % 12
+
 
 def harmony_match(path: str, expected: Sequence[tuple[float, float, str]]) -> dict:
     """Did the harmony you wrote survive into the audio?
 
     ``expected`` is ``(start_s, end_s, chord_name)`` -- e.g. ``('Dm', 'A7')``
-    names matching the templates (root, root+'m', +'7', +'dim'). Compares only
-    the ROOT, because a chroma estimate cannot reliably tell a triad from its
-    relative. Anything above ~85% root agreement means the render is playing
-    what you wrote.
+    names in any common spelling -- 'Eb', 'D#', 'Cmaj7', 'F#m7b5' all work, and
+    the suffix is ignored. Compares only the ROOT, because a chroma estimate
+    cannot reliably tell a triad from its relative. Anything above ~85% root
+    agreement means the render is playing what you wrote.
+
+    A name that cannot be parsed is reported under ``unparsed_names`` rather
+    than quietly counting as a mismatch.
     """
     hits = 0
     rows = []
+    unparsed = []
     for a, b, want in expected:
         c = chroma(path, a, b)
+        want_pc = chord_root_pc(want)
+        if want_pc is None:
+            unparsed.append(str(want))
+        if not any(c):
+            rows.append({'start': a, 'expected': want, 'detected': None,
+                         'root_ok': False, 'note': 'silent segment'})
+            continue
         got = max(_TPL, key=lambda k: sum(c[p] for p in _TPL[k]) / len(_TPL[k]))
-        ok = got.rstrip('m7dim') == str(want).rstrip('m7dim')
+        ok = want_pc is not None and chord_root_pc(got) == want_pc
         hits += ok
         rows.append({'start': a, 'expected': want, 'detected': got, 'root_ok': ok})
-    return {'bars': len(expected), 'root_matches': hits,
-            'pct': round(100 * hits / max(1, len(expected)), 1), 'rows': rows}
+    out = {'bars': len(expected), 'root_matches': hits,
+           'pct': round(100 * hits / max(1, len(expected)), 1), 'rows': rows}
+    if unparsed:
+        # Loud, because the old behaviour was to score these 0 in silence.
+        out['unparsed_names'] = sorted(set(unparsed))
+    return out
 
 
 # ===========================================================================

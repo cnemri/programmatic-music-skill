@@ -178,7 +178,9 @@ def mix_stems(wavs: Sequence[str], stems: Sequence[Stem], out_wav: str,
     """
     if len(wavs) != len(stems):
         raise ValueError('wavs and stems must be the same length')
-    dur = audio_info(max(wavs, key=lambda w: audio_info(w)['duration']))['duration']
+    # One ffprobe per stem. The old form called audio_info inside max()'s key
+    # and then once more on the winner: n+1 subprocesses to read n numbers.
+    dur = max(audio_info(w)['duration'] for w in wavs)
     fstart = max(0.0, dur - fade_out)
 
     chains = [_stem_filter(i, s) for i, s in enumerate(stems)]
@@ -294,8 +296,14 @@ def score_to_mp3(score, out_mp3: str, stems: Sequence[Stem] | None = None,
     info = audio_info(out_mp3)
     if verbose:
         print(f'  -> {out_mp3}  {info["duration"]:.1f}s')
-    if not keep and workdir is None:
+    # `keep` means keep, whether or not the caller named the workdir. Gating
+    # this on `workdir is None` silently left every stem wav on disk for anyone
+    # who passed one -- which is everyone who wants a reproducible build dir.
+    if not keep:
         for w in wavs:
-            os.remove(w)
+            try:
+                os.remove(w)
+            except OSError:
+                pass
     return {'mp3': out_mp3, 'master_wav': master, 'midi': full_mid,
             'stem_midis': mids, 'workdir': tmp, **info}

@@ -82,7 +82,7 @@ Read the one you need; do not read them all.
 | `13-idioms-and-grooves.md` | concrete style recipes across traditions |
 | `14-workflows.md` | end-to-end playbooks |
 | `15-verifying-without-listening.md` | **read this before shipping anything** |
-| `16-pitfalls.md` | 184 recorded traps, consolidated from every chapter |
+| `16-pitfalls.md` | 200 recorded traps, consolidated from every chapter |
 
 ## Scripts
 

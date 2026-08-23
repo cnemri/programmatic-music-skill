@@ -26,6 +26,7 @@ from typing import Iterable, Sequence
 from music21 import midi, stream, tempo
 
 __all__ = [
+    'MAX_CHANNEL', 'default_channels',
     'TempoMap',
     'add_tempo_map',
     'retrack',
@@ -118,6 +119,32 @@ def add_tempo_map(parts: Iterable[stream.Stream],
 # ---------------------------------------------------------------------------
 # Channels
 # ---------------------------------------------------------------------------
+MAX_CHANNEL = 16
+
+
+def default_channels(n: int) -> list[int]:
+    """Channels 1..16 in order for ``n`` parts, skipping the drum channel.
+
+    MIDI has sixteen channels and 10 is reserved for percussion, so fifteen
+    melodic parts is a hard ceiling. Counting past it produced channel 17, 18,
+    19 ... which are not MIDI channels: the file still wrote without complaint
+    and those parts came back silent or folded onto another part's patch.
+    """
+    out, nxt = [], 1
+    for _ in range(int(n)):
+        if nxt == DRUM_CHANNEL:
+            nxt += 1
+        if nxt > MAX_CHANNEL:
+            raise ValueError(
+                f'{n} parts need more than the {MAX_CHANNEL - 1} melodic MIDI '
+                f'channels there are (channel {DRUM_CHANNEL} is percussion). '
+                f'Merge parts that share an instrument, or render in groups '
+                f'and mix the stems.')
+        out.append(nxt)
+        nxt += 1
+    return out
+
+
 def retrack(mf: midi.MidiFile, channels: Sequence[int]) -> midi.MidiFile:
     """Force one MIDI channel per track, in order, on tracks 1..n.
 
@@ -129,6 +156,9 @@ def retrack(mf: midi.MidiFile, channels: Sequence[int]) -> midi.MidiFile:
     This is the single most important function in the package. Without it, four
     guitar Parts all land on channel 1 and cut each other off.
     """
+    bad = [c for c in channels if not 1 <= int(c) <= MAX_CHANNEL]
+    if bad:
+        raise ValueError(f'MIDI channels must be 1-{MAX_CHANNEL}, got {bad}')
     for idx, ch in enumerate(channels, start=1):
         if idx >= len(mf.tracks):
             break
@@ -166,13 +196,7 @@ def write_midi(score: stream.Score,
     """
     parts = list(score.parts) or [score]
     if channels is None:
-        channels = []
-        nxt = 1
-        for _ in parts:
-            if nxt == DRUM_CHANNEL:
-                nxt += 1
-            channels.append(nxt)
-            nxt += 1
+        channels = default_channels(len(parts))
     mf = midi.translate.streamToMidiFile(score)
     retrack(mf, channels)
     return _dump(mf, path)
@@ -193,13 +217,7 @@ def write_stems(score: stream.Score,
     os.makedirs(out_dir, exist_ok=True)
     parts = list(score.parts) or [score]
     if channels is None:
-        channels = []
-        nxt = 1
-        for _ in parts:
-            if nxt == DRUM_CHANNEL:
-                nxt += 1
-            channels.append(nxt)
-            nxt += 1
+        channels = default_channels(len(parts))
     if names is None:
         names = [(p.id if isinstance(p.id, str) else f'part{i}')
                  for i, p in enumerate(parts)]

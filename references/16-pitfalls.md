@@ -20,7 +20,7 @@ you cannot hear why.
 ---
 
 
-**199 recorded pitfalls across 16 chapters.**
+**200 recorded pitfalls across 16 chapters.**
 
 
 ## The music21 Object Model and Stream System
@@ -316,7 +316,7 @@ Further traps, decreasing damage:
 
 ## The MIDI Layer: How Your Music Becomes Audible
 
-*from `06-midi-deep.md` — 24 item(s)*
+*from `06-midi-deep.md` — 25 item(s)*
 
 1. **Two Parts with the same instrument share a MIDI channel and cut each other's notes short.**
    `channelByInstrument` is keyed by `midiProgram` (`translate.py:2395`). Neither
@@ -373,6 +373,10 @@ Further traps, decreasing damage:
     `isChannelEvent()` instead, as `retrack` does.
 24. **Run `verifyMidi()` on every file you write.** It catches the exact class of error you cannot
     see in a score and cannot hear: stolen note-offs, retriggers, silent notes, program stomps.
+
+25. **More than 15 melodic parts cannot be rendered in one MIDI file.** Sixteen channels
+    minus percussion leaves fifteen. Allocating past it silently produced channel 17+, which
+    is not a channel: those parts come back silent or folded onto another patch.
 
 
 ## Audio to Score: Transcribing Recordings into music21

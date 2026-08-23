@@ -300,3 +300,90 @@ def test_dynamic_rescales_explicit_velocity():
         hairpin.insert(i, x)
     hairpin.insert(0, dynamics.Crescendo(ns[0], ns[-1]))
     assert vels(hairpin) == [90, 90, 90], 'hairpins do not affect MIDI at all'
+
+
+# ------------------------------------------------- regressions: verify ---
+def test_chord_root_pc_handles_flats_and_any_suffix():
+    # Flats used to be unrepresentable: the template table is spelled with
+    # sharps, so an expected 'Eb' could never match a detected 'D#'.
+    assert verify.chord_root_pc('Eb') == verify.chord_root_pc('D#') == 3
+    assert verify.chord_root_pc('Bb') == verify.chord_root_pc('A#') == 10
+    assert verify.chord_root_pc('Cb') == 11 and verify.chord_root_pc('B#') == 0
+    # The suffix is ignored, whatever it is. The old rstrip('m7dim') read
+    # 'Cmaj7' as 'Cmaj' and 'Gsus4' as 'Gsus4', neither of which can equal a
+    # detected root, so both scored zero in silence.
+    for name, pc in [('C', 0), ('Cm', 0), ('C7', 0), ('Cdim', 0), ('Cmaj7', 0),
+                     ('Cm6', 0), ('Csus4', 0), ('Cadd9', 0), ('Cm7b5', 0),
+                     ('F#m7b5', 6), ('Abmaj7', 8)]:
+        assert verify.chord_root_pc(name) == pc, name
+    assert verify.chord_root_pc('H7') is None
+    assert verify.chord_root_pc('') is None
+
+
+def test_harmony_match_reports_unparsable_names():
+    rows = [(0.0, 1.0, 'not-a-chord')]
+    out = verify.harmony_match(_silence_wav(), rows)
+    assert out['unparsed_names'] == ['not-a-chord']
+
+
+def _silence_wav():
+    """A short silent wav, for checks that must not depend on a soundfont."""
+    import struct
+    import wave as _wave
+    path = os.path.join(tempfile.mkdtemp(), 'silence.wav')
+    with _wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(struct.pack('<' + 'h' * 22050, *([0] * 22050)))
+    return path
+
+
+def test_silent_segment_is_reported_not_guessed():
+    out = verify.harmony_match(_silence_wav(), [(0.0, 1.0, 'Cm')])
+    assert out['rows'][0]['detected'] is None
+    assert out['rows'][0]['note'] == 'silent segment'
+    assert out['root_matches'] == 0
+
+
+def test_decode_cache_avoids_redecoding_the_same_file():
+    path = _silence_wav()
+    calls = []
+    real = verify._decode
+
+    def counting(p, sr=22050):
+        calls.append(p)
+        return real(p, sr)
+
+    verify._decode = counting
+    verify._DECODE_CACHE.clear()
+    try:
+        for i in range(8):
+            verify.chroma(path, 0.0, 0.5)
+        assert len(calls) == 1, f'decoded {len(calls)} times, expected 1'
+    finally:
+        verify._decode = real
+        verify._DECODE_CACHE.clear()
+
+
+# ------------------------------------------------- regressions: midiio ---
+def test_default_channels_skips_ten_and_refuses_to_overflow():
+    assert midiio.default_channels(3) == [1, 2, 3]
+    assert midiio.default_channels(11) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12]
+    assert midiio.default_channels(15)[-1] == 16
+    # Sixteen melodic parts do not fit. This used to hand back channel 17.
+    with pytest.raises(ValueError, match='melodic MIDI channels'):
+        midiio.default_channels(16)
+
+
+def test_retrack_rejects_channels_outside_1_16():
+    from music21 import note as m21note
+    sc = stream.Score()
+    p = stream.Part(id='p')
+    p.insert(0, m21note.Note('C4', quarterLength=1))
+    sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as d:
+        with pytest.raises(ValueError, match='must be 1-16'):
+            midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[17])
+        with pytest.raises(ValueError, match='must be 1-16'):
+            midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[0])
