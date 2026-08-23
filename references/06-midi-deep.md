@@ -117,6 +117,12 @@ retrack(mf, verbose=True)
 mf.open('out.mid', 'wb'); mf.write(); mf.close()
 ```
 
+**Fifteen parts is the ceiling.** There are sixteen channels and 10 is percussion, so
+`midiio.default_channels` raises past fifteen melodic parts rather than handing out channel
+17 — which is not a MIDI channel, writes without complaint, and comes back silent or folded
+onto another part's patch. `retrack` rejects anything outside 1–16 for the same reason. Past
+that limit, merge parts that share an instrument or render in groups and mix the stems.
+
 Tested on the collision case:
 
 ```
@@ -799,3 +805,7 @@ WITHOUT retrack  channels [[], [10], [1], [2], [2]]   peak RMS 0.1779 (15% of en
     `isChannelEvent()` instead, as `retrack` does.
 24. **Run `verifyMidi()` on every file you write.** It catches the exact class of error you cannot
     see in a score and cannot hear: stolen note-offs, retriggers, silent notes, program stomps.
+
+25. **More than 15 melodic parts cannot be rendered in one MIDI file.** Sixteen channels
+    minus percussion leaves fifteen. Allocating past it silently produced channel 17+, which
+    is not a channel: those parts come back silent or folded onto another patch.

@@ -300,3 +300,183 @@ def test_dynamic_rescales_explicit_velocity():
         hairpin.insert(i, x)
     hairpin.insert(0, dynamics.Crescendo(ns[0], ns[-1]))
     assert vels(hairpin) == [90, 90, 90], 'hairpins do not affect MIDI at all'
+
+
+# ------------------------------------------------- regressions: verify ---
+def test_chord_root_pc_handles_flats_and_any_suffix():
+    # Flats used to be unrepresentable: the template table is spelled with
+    # sharps, so an expected 'Eb' could never match a detected 'D#'.
+    assert verify.chord_root_pc('Eb') == verify.chord_root_pc('D#') == 3
+    assert verify.chord_root_pc('Bb') == verify.chord_root_pc('A#') == 10
+    assert verify.chord_root_pc('Cb') == 11 and verify.chord_root_pc('B#') == 0
+    # The suffix is ignored, whatever it is. The old rstrip('m7dim') read
+    # 'Cmaj7' as 'Cmaj' and 'Gsus4' as 'Gsus4', neither of which can equal a
+    # detected root, so both scored zero in silence.
+    for name, pc in [('C', 0), ('Cm', 0), ('C7', 0), ('Cdim', 0), ('Cmaj7', 0),
+                     ('Cm6', 0), ('Csus4', 0), ('Cadd9', 0), ('Cm7b5', 0),
+                     ('F#m7b5', 6), ('Abmaj7', 8)]:
+        assert verify.chord_root_pc(name) == pc, name
+    assert verify.chord_root_pc('H7') is None
+    assert verify.chord_root_pc('') is None
+
+
+def test_harmony_match_reports_unparsable_names():
+    rows = [(0.0, 1.0, 'not-a-chord')]
+    out = verify.harmony_match(_silence_wav(), rows)
+    assert out['unparsed_names'] == ['not-a-chord']
+
+
+def _silence_wav():
+    """A short silent wav, for checks that must not depend on a soundfont."""
+    import struct
+    import wave as _wave
+    path = os.path.join(tempfile.mkdtemp(), 'silence.wav')
+    with _wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(struct.pack('<' + 'h' * 22050, *([0] * 22050)))
+    return path
+
+
+def test_silent_segment_is_reported_not_guessed():
+    out = verify.harmony_match(_silence_wav(), [(0.0, 1.0, 'Cm')])
+    assert out['rows'][0]['detected'] is None
+    assert out['rows'][0]['note'] == 'silent segment'
+    assert out['root_matches'] == 0
+
+
+def test_decode_cache_avoids_redecoding_the_same_file():
+    path = _silence_wav()
+    calls = []
+    real = verify._decode
+
+    def counting(p, sr=22050):
+        calls.append(p)
+        return real(p, sr)
+
+    verify._decode = counting
+    verify._DECODE_CACHE.clear()
+    try:
+        for i in range(8):
+            verify.chroma(path, 0.0, 0.5)
+        assert len(calls) == 1, f'decoded {len(calls)} times, expected 1'
+    finally:
+        verify._decode = real
+        verify._DECODE_CACHE.clear()
+
+
+# ------------------------------------------------- regressions: midiio ---
+def test_default_channels_skips_ten_and_refuses_to_overflow():
+    assert midiio.default_channels(3) == [1, 2, 3]
+    assert midiio.default_channels(11) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12]
+    assert midiio.default_channels(15)[-1] == 16
+    # Sixteen melodic parts do not fit. This used to hand back channel 17.
+    with pytest.raises(ValueError, match='melodic MIDI channels'):
+        midiio.default_channels(16)
+
+
+def test_retrack_rejects_channels_outside_1_16():
+    from music21 import note as m21note
+    sc = stream.Score()
+    p = stream.Part(id='p')
+    p.insert(0, m21note.Note('C4', quarterLength=1))
+    sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as d:
+        with pytest.raises(ValueError, match='must be 1-16'):
+            midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[17])
+        with pytest.raises(ValueError, match='must be 1-16'):
+            midiio.write_midi(sc, os.path.join(d, 'x.mid'), channels=[0])
+
+
+# -------------------------------------------------- regressions: drums ---
+def test_groove_fill_respects_only_and_skip():
+    from music21 import stream as _s
+    keys = lambda p: sorted({int(n.pitch.midi) for n in p.notes})
+
+    # rock_basic has no hand_clap at all, so only=['hand_clap'] must be silent.
+    # The fill used to ignore the filter and emit snares -- the sole output was
+    # the one instrument the caller had excluded.
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', only=['hand_clap'], fill=True)
+    assert keys(p) == []
+
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', skip=['snare'], fill=True)
+    assert drums.GM['snare'] not in keys(p)
+
+    # ...and an unfiltered fill still fills.
+    p = _s.Part()
+    drums.groove(p, 0, 'rock_basic', fill=True)
+    assert drums.GM['snare'] in keys(p)
+
+
+def test_every_groove_is_internally_consistent():
+    """Hits must fit the cycle, and the bar length must match the meter."""
+    from fractions import Fraction
+    for name, g in drums.GROOVES.items():
+        span = g['bar'] * g['bars']
+        offs = [o for o, _, _ in g['hits']]
+        assert min(offs) >= 0, name
+        assert max(offs) < span, f'{name}: hit at {max(offs)} outside {span}'
+        if '/' in g['meter']:
+            num, den = g['meter'].split('/')
+            implied = float(Fraction(int(num) * 4, int(den)))
+            assert abs(implied - g['bar']) < 1e-9, \
+                f"{name}: bar {g['bar']} but meter {g['meter']} implies {implied}"
+
+
+# ------------------------------------------------ regressions: scripts ---
+def _load_script(stem):
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        '..', 'scripts', f'{stem}.py')
+    spec = importlib.util.spec_from_file_location(stem, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_analyze_score_reads_tempo_offsets_from_the_hierarchy():
+    """A tempo map must not collapse onto bar 1.
+
+    `mm.offset` is the offset inside the mark's immediate container. Once a
+    score has measures that container is a Measure, so every mark on a barline
+    reads 0.0 and the whole map lands on the downbeat.
+    """
+    from music21 import note as m21note
+    analyze = _load_script('analyze_score')
+    sc = stream.Score()
+    p = stream.Part()
+    for i in range(4):
+        p.insert(i * 4.0, m21note.Note('C4', quarterLength=4))
+    midiio.add_tempo_map([p], [(0.0, 60), (4.0, 90), (8.0, 120), (12.0, 150)])
+    p.makeMeasures(inPlace=True)          # this is what breaks mm.offset
+    sc.insert(0, p)
+    got = [(t['offset'], t['bpm']) for t in analyze.tempos(sc)]
+    assert got == [(0.0, 60.0), (4.0, 90.0), (8.0, 120.0), (12.0, 150.0)], got
+
+
+def test_check_ranges_does_not_double_report_parts_sharing_a_name():
+    """Violations were matched to parts by NAME, so duplicate names each
+    printed the other's and the listing did not add up to the total."""
+    import subprocess
+    from music21 import note as m21note
+    sc = stream.Score()
+    for _ in range(2):
+        p = stream.Part()
+        p.partName = 'Acoustic Guitar'          # deliberately the same name
+        p.insert(0, instrument.AcousticGuitar())
+        p.insert(0, m21note.Note('C2', quarterLength=1))   # below E2
+        sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 's.musicxml')
+        sc.write('musicxml', fp=path)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              '..', 'scripts', 'check_ranges.py')
+        out = subprocess.run([sys.executable, script, path],
+                             capture_output=True, text=True).stdout
+    listed = sum(1 for ln in out.splitlines() if 'semitone(s)' in ln)
+    total = int([ln for ln in out.splitlines()
+                 if 'out of range' in ln][0].split()[0])
+    assert listed == total == 2, f'listed {listed}, total {total}\n{out}'

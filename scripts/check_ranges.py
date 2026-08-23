@@ -316,10 +316,13 @@ def main() -> int:
 
     violations: list[Violation] = []
     infos: list[dict] = []
-    for p in parts:
+    per_part: list[list[Violation]] = []
+    for idx, p in enumerate(parts):
         v, i = check_part(p, forced, source=a.source, assume=a.assume,
                           tolerance=a.tolerance)
+        i['index'] = idx
         violations += v
+        per_part.append(v)
         infos.append(i)
 
     if a.json:
@@ -327,14 +330,17 @@ def main() -> int:
                           'violations': [asdict(v) for v in violations]}, indent=2))
         return 1 if violations else 0
 
-    for i in infos:
+    # Pair each info with its own violations by INDEX. Matching on the part
+    # name double-reported every violation whenever two parts shared a name --
+    # two Parts both called 'Acoustic Guitar' each printed the other's, so the
+    # listed lines did not add up to the total on the last line.
+    for i, mine in zip(infos, per_part):
         rng = (f"{i['low']['name'] if i['low'] else '?'}"
                f"..{i['high']['name'] if i['high'] else '?'}")
         src = '/'.join(sorted({b['source'] for b in (i['low'], i['high']) if b}))
-        print(f"{i['part']} [{i['instrument']}] range {rng} ({src or 'none'}), "
-              f"transp {i['transposition'] or 'none'}, read as {i['interpretedAs']} "
-              f"pitch, {i['notesChecked']} notes")
-        mine = [v for v in violations if v.part == i['part']]
+        print(f"[{i['index']}] {i['part']} [{i['instrument']}] range {rng} "
+              f"({src or 'none'}), transp {i['transposition'] or 'none'}, "
+              f"read as {i['interpretedAs']} pitch, {i['notesChecked']} notes")
         for v in mine:
             print(v.line())
         if not mine:

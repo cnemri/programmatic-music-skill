@@ -373,7 +373,8 @@ def groove(part: stream.Stream, offset: float, name: str, vel: float = 80,
     ``vel`` is the loud-stroke velocity; every hit is scaled by its own
     velocity scalar. ``only`` / ``skip`` filter by instrument name, which is how
     you thin a groove out for a quiet section -- e.g. ``only=['hand_clap']`` for
-    palmas alone. ``fill`` adds a sixteenth pickup at the end of the last cycle.
+    palmas alone. ``fill`` adds a sixteenth pickup at the end of the last cycle,
+    and obeys ``only``/``skip`` like every other stroke.
 
     Returns the offset just past the last cycle.
     """
@@ -389,9 +390,15 @@ def groove(part: stream.Stream, offset: float, name: str, vel: float = 80,
             hit(part, base + off, key, vel * scal + random.uniform(-3, 3),
                 jitter=humanise)
         if fill and r == repeats - 1:
-            for j, o in enumerate((span - 0.75, span - 0.5, span - 0.25)):
-                hit(part, base + o, 'snare' if 'snare' in str(g['hits']) else 'cajon_slap',
-                    vel * (0.55 + 0.15 * j), jitter=humanise)
+            # The fill has to respect only/skip too. It used to ignore them, so
+            # only=['hand_clap'] on a groove with no claps returned nothing but
+            # the fill's snares -- the one instrument you had excluded.
+            keys = [k for _, k, _ in g['hits']]
+            key = 'snare' if 'snare' in keys else 'cajon_slap'
+            if not (only and key not in only) and not (skip and key in skip):
+                for j, o in enumerate((span - 0.75, span - 0.5, span - 0.25)):
+                    hit(part, base + o, key, vel * (0.55 + 0.15 * j),
+                        jitter=humanise)
     return float(offset) + repeats * span
 
 

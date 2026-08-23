@@ -125,7 +125,10 @@ rows = verify.section_levels('out.mp3', [
 assert next(r for r in rows if r['is_peak'])['section'] == 'climax'
 ```
 
-If your climax is not the peak, the mix is wrong however good the notes are. In practice
+If your climax is not the peak, the mix is wrong however good the notes are. Reach for
+*density* to fix it — how many voices are playing and how many notes each spends — before
+you reach for velocity. Velocity is not loudness; a section that adds a doubling voice and
+a busier iqa' will out-measure one that merely plays harder. In practice
 the offender is almost always a dense accompaniment section out-shouting a sparser one —
 fix it in the stem gains or by thinning the accompaniment, not by shouting louder.
 
@@ -158,6 +161,10 @@ verify.harmony_match('out.mp3', [
 
 Roots only — a chroma estimate cannot reliably separate a triad from its relative minor,
 and pretending otherwise produces false alarms. **Above ~85 % root agreement is a pass.**
+Name the chord however you like: `Eb` and `D#` are the same root, and any suffix
+(`Cmaj7`, `Fm6`, `F#m7b5`, `Gsus4`) is ignored rather than mangled. A name that will not
+parse comes back in `unparsed_names` instead of quietly scoring zero, and a segment with no
+signal in it reports `detected: None` rather than guessing a chord from silence.
 Expect misses in very sparse textures (a single held note gives the estimator nothing) and
 where C major and A minor genuinely share content; check whether the same bar reads
 correctly in a denser repeat before you go changing it.

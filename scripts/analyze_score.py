@@ -108,10 +108,21 @@ def meters(s: stream.Score) -> list[dict]:
 
 
 def tempos(s: stream.Score) -> list[dict]:
-    """Dedup: a MetronomeMark is usually duplicated into every Part."""
+    """Dedup: a MetronomeMark is usually duplicated into every Part.
+
+    The offset has to come from ``getOffsetInHierarchy``. ``mm.offset`` is the
+    offset inside whatever container the mark happens to sit in, and after a
+    MIDI parse that is a Measure -- so every mark on a barline reads 0.0, a
+    whole tempo map collapses onto the downbeat of bar 1, and the dedup below
+    then merges genuinely different events that share a bpm.
+    """
     out, seen = [], set()
     for mm in s.recurse().getElementsByClass(tempo.MetronomeMark):
-        entry = (float(mm.offset), round(float(mm.getQuarterBPM() or 0), 3))
+        try:
+            off = float(mm.getOffsetInHierarchy(s))
+        except Exception:
+            off = float(mm.offset)
+        entry = (off, round(float(mm.getQuarterBPM() or 0), 3))
         if entry in seen:
             continue
         seen.add(entry)

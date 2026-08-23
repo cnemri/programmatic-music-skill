@@ -265,6 +265,21 @@ offset 0.** The dedup in `conductorStream` only compares against the previous of
 Whether a mark sits in a Part or a Measure is irrelevant to MIDI — `getOffsetInHierarchy` flattens
 it. It *is* relevant to MusicXML, where it should be in the measure it belongs to.
 
+**Reading them back, use `getOffsetInHierarchy` too.** `mm.offset` is the offset inside whatever
+container the mark sits in, and once a score has measures that container is a `Measure` — so every
+mark on a barline reads `0.0` and an entire tempo map collapses onto the downbeat of bar 1:
+
+```python
+sc = converter.parse('with_a_tempo_map.mid')
+sorted({float(m.offset) for m in sc.recurse().getElementsByClass(tempo.MetronomeMark)})
+# [0.0, 352.0]                         <- eight distinct marks, seven read as 0.0
+midiio.TempoMap.from_score(sc).points
+# [(0.0, 84), (8.0, 92), (16.0, 100), (24.0, 110), (32.0, 117.45), ...]
+```
+
+`midiio.TempoMap.from_score` does it correctly; copy that, or you will silently deduplicate
+distinct tempo events that happen to share a bpm.
+
 ### Accelerando / ritardando
 
 There is no automatic ramp. `RitardandoSpanner`/`AccelerandoSpanner` are notation only (verified:
@@ -638,3 +653,7 @@ Other rhythm shapers you build the same way: fixed offset humanization
     an `ExpanderException` from `write('midi')`. Call `s.expandRepeats()` yourself first to
     fail early.
 23. **There is no swing support.** Rewrite offsets by hand and never notate the swung copy.
+
+24. **`mm.offset` is site-relative; reading a tempo map with it collapses every
+    barline mark to 0.0.** Once the score has measures, the mark's container is a Measure.
+    Use `getOffsetInHierarchy(score)` — or `midiio.TempoMap.from_score`, which already does.
