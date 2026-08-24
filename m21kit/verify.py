@@ -33,7 +33,7 @@ from music21 import analysis, chord, instrument, key, stream
 __all__ = [
     'pitched_parts', 'pitch_report', 'outside_mode', 'range_check', 'key_check', 'rhythm_report',
     'voice_leading_report', 'density_by_part',
-    'audio_stats', 'section_levels', 'pulse', 'chroma', 'harmony_match',
+    'audio_stats', 'section_levels', 'pulse', 'cycle', 'chroma', 'harmony_match',
     'melody_match', 'full_report',
 ]
 
@@ -437,6 +437,54 @@ def pulse(path: str, start: float = 0.0, end: float | None = None,
             'period_s': round(k / fps, 3),
             'bpm': round(60 / (k / fps), 1),
             'metered': bool(ac[lo:hi].max() > 0.15)}
+
+
+def cycle(path: str, start: float = 0.0, end: float | None = None,
+          low_s: float = 1.0, high_s: float = 8.0) -> dict:
+    """Find the long rhythmic CYCLE, the thing :func:`pulse` cannot see.
+
+    ``pulse`` searches 0.27-1.33s because it is looking for a beat, and that is
+    the right window for a groove. It is the wrong instrument for an iqa' or a
+    tala: samai thaqil is ten eighths grouped 3+2+2+3 with strokes on only five
+    of them, so at any sane tempo its cycle is 4-6 seconds long and only five
+    events wide. ``pulse`` reports near-zero strength and ``metered: False`` for
+    music that is perfectly, audibly metred.
+
+    This autocorrelates the onset-strength envelope over a window sized for
+    cycles instead. Point it at a percussion stem where you have one -- a full
+    mix full of legato strings will bury the strokes.
+
+        cycle('darbouka.wav', 40, 120, 3.0, 6.0)
+        # {'period_s': 4.168, 'strength': 0.5, 'bpm_cycle': 14.4, 'metered': True}
+
+    ``strength`` is the normalised autocorrelation at the peak: above ~0.25 the
+    cycle is really there, and below ~0.1 the passage is free rhythm. That
+    comparison is how you *prove* a taqsim is unmetred rather than asserting it.
+    """
+    import numpy as np
+    x, sr = _decode_cached(path)
+    if end is None:
+        end = len(x) / sr
+    x = x[int(start * sr):int(end * sr)]
+    if len(x) < sr * max(2.0, low_s * 2):
+        return {'strength': 0.0, 'period_s': None, 'note': 'segment too short'}
+    hop = 256
+    fps = sr / hop
+    env = np.sqrt(np.array([(x[i:i + hop] ** 2).mean()
+                            for i in range(0, len(x) - hop, hop)]))
+    on = np.maximum(0.0, np.diff(np.log(env + 1e-6)))
+    on = on - on.mean()
+    ac = np.correlate(on, on, 'full')[len(on) - 1:]
+    ac /= (ac[0] + 1e-9)
+    lo, hi = int(low_s * fps), min(len(ac) - 1, int(high_s * fps))
+    if hi <= lo:
+        return {'strength': 0.0, 'period_s': None}
+    k = lo + int(np.argmax(ac[lo:hi]))
+    strength = float(ac[lo:hi].max())
+    return {'period_s': round(k / fps, 3),
+            'strength': round(strength, 3),
+            'bpm_cycle': round(60.0 / (k / fps), 2),
+            'metered': bool(strength > 0.25)}
 
 
 def chroma(path: str, start: float, end: float) -> list[float]:

@@ -149,6 +149,27 @@ mistake makes the measurement worthless.
 - The detected bpm is often a simple multiple or fraction of what you wrote — half-bar and
   tresillo periodicities are real features of the music, not errors.
 
+### Is there a *cycle*?
+
+`pulse` hunts a beat, so it searches 0.27–1.33 s. That is the wrong instrument for an iqāʿ
+or a tāla. Samāʿī thaqīl is ten eighths grouped 3+2+2+3 with strokes on only five of them:
+at any real tempo its cycle is 4–6 s long, entirely outside `pulse`'s window, and `pulse`
+duly reports near-nothing for music that is perfectly metred. Same for teental (16),
+bulerías and soleá (12), muhajjar (14).
+
+```python
+verify.cycle('darbouka.wav', 60, 180, low_s=3.0, high_s=6.0)
+# {'period_s': 4.168, 'strength': 0.456, 'bpm_cycle': 14.4, 'metered': True}
+#  ...against a written cycle of 5.0 ql at 72bpm = 4.167s
+```
+
+`strength` above ~0.25 means the cycle is really there; below ~0.1 the passage is free.
+Comparing the two is how you *prove* a taqsīm is unmetred instead of asserting it — a free
+nāy introduction measured 0.09 against the body's 0.46.
+
+**Point it at a percussion stem.** On a full mix of legato strings the strokes get buried:
+the same passage that reads 0.46 on the darbouka stem read 0.05 on the master.
+
 ### Did the harmony survive?
 
 ```python
