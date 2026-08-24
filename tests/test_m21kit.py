@@ -553,3 +553,56 @@ def test_samai_and_yuruk_grooves_match_their_iqa():
     assert yuruk['meter'] == '6/8' and yuruk['bar'] == 3.0
     strong = sorted(o for o, k, _ in yuruk['hits'] if k != 'darbuka_ka')
     assert strong == [0.0, 1.5, 2.5], strong
+
+
+# ------------------------------------------- regressions: cycle detection ---
+@skip_audio
+def test_cycle_finds_a_long_iqa_that_pulse_cannot():
+    """`pulse` searches 0.27-1.33s because it is hunting a beat. A samai
+    thaqil cycle is ten eighths with strokes on five of them, so at any real
+    tempo it is 4-6 seconds long and falls entirely outside that window."""
+    from music21 import tempo as m21tempo
+    perc = stream.Part()
+    drums.mark_percussion(perc)
+    perc.insert(0, m21tempo.MetronomeMark(number=72))
+    for b in range(14):                       # 14 cycles of samai thaqil
+        drums.groove(perc, b * 5.0, 'samai_thaqil', vel=100)
+    sc = stream.Score()
+    sc.insert(0, perc)
+
+    with tempfile.TemporaryDirectory() as td:
+        mid = os.path.join(td, 'c.mid')
+        wav = os.path.join(td, 'c.wav')
+        midiio.write_midi(sc, mid, channels=[10])
+        render.render_midi(mid, wav, _sf, gain=0.7, reverb=0.0)
+
+        want = 5.0 * 60.0 / 72.0              # 4.167 s per cycle
+        got = verify.cycle(wav, 1.0, 50.0, 3.0, 6.0)
+        assert abs(got['period_s'] - want) < 0.15, (got, want)
+        assert got['metered'] and got['strength'] > 0.25, got
+
+        # the same cycle is invisible to pulse(): its window stops at 1.33s
+        beat = verify.pulse(wav, 1.0, 50.0)
+        assert beat['period_s'] < 1.4
+
+
+@skip_audio
+def test_cycle_reports_free_rhythm_as_unmetred():
+    """The point of the strength number: proving a taqsim really is free."""
+    import random as _r
+    rng = _r.Random(3)
+    p = stream.Part()
+    p.insert(0, instrument.Flute())
+    t = 0.0
+    while t < 40.0:                            # deliberately irregular
+        d = rng.uniform(1.2, 3.4)
+        perform.put(p, t, rng.choice([60, 62, 64, 65, 67]), d * 0.9, 80)
+        t += d
+    sc = stream.Score()
+    sc.insert(0, p)
+    with tempfile.TemporaryDirectory() as td:
+        mid, wav = os.path.join(td, 'f.mid'), os.path.join(td, 'f.wav')
+        midiio.write_midi(sc, mid, channels=[1])
+        render.render_midi(mid, wav, _sf, gain=0.7, reverb=0.0)
+        got = verify.cycle(wav, 1.0, 38.0, 3.0, 6.0)
+        assert not got['metered'], got
